@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Virtual env
+.venv/
+venv/
+env/
+
+# Build / dystrybucja (generowane przez BUILD_EXE.bat / installer)
+build/
+dist/
+SIEKACZ9000/
+INSTALLER/
+*.spec.bak
+tools/installers/*.exe
+
+# Lokalna baza i logi
+*.log
+*.sqlite
+*.sqlite3
+*.db
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Pliki tymczasowe SIEKACZA
+_test_*.py
+_baseline.txt
+_count_candidates.py
+_validate_missing_fill.py
+tools/debug/_count_candidates.py
+tools/debug/_validate_missing_fill.py

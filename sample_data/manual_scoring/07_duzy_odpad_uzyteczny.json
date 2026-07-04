@@ -1,0 +1,21 @@
+{
+  "meta": {
+    "client_name": "Manual scoring",
+    "order_number": "MS-07",
+    "material": "Blacha 2 mm",
+    "notes": "Test preferencji duzego prostokatnego odpadu. Dobry wynik powinien zostawic jeden sensowny remnant, nie pociac wszystko w waskie paski.",
+    "creation_date": "2026-07-04T16:55:00"
+  },
+  "sheet_stock": [
+    {"material": "BLACHA", "thickness": 2, "width": 3050, "height": 2050, "quantity": 1, "price": 500, "grain_direction": "none", "allow_rotation": true, "min_offcut_width": 250, "min_offcut_height": 250, "source": "stock"}
+  ],
+  "linear_stock": [],
+  "sheet_parts": [
+    {"name": "Panel A", "width": 1200, "height": 800, "quantity": 2, "material": "BLACHA", "thickness": 2, "allow_rotation": true, "grain_direction": "none", "label": "A", "priority": 3, "notes": ""},
+    {"name": "Panel B", "width": 900, "height": 650, "quantity": 2, "material": "BLACHA", "thickness": 2, "allow_rotation": true, "grain_direction": "none", "label": "B", "priority": 2, "notes": ""},
+    {"name": "Panel C", "width": 450, "height": 350, "quantity": 4, "material": "BLACHA", "thickness": 2, "allow_rotation": true, "grain_direction": "none", "label": "C", "priority": 1, "notes": ""},
+    {"name": "Podkladka", "width": 120, "height": 80, "quantity": 20, "material": "BLACHA", "thickness": 2, "allow_rotation": true, "grain_direction": "none", "label": "P", "priority": 0, "notes": "Filler"}
+  ],
+  "linear_parts": [],
+  "settings": {"job_type": "sheet", "algorithm": "Vertical Segmented Guillotine", "optimization_mode": "comfort", "kerf": 5, "kerf_tolerance": 0.2, "margin": 0, "sheet_allowance": 0, "min_reusable_offcut_size": 250, "display_orientation": "horizontal", "cutting_mode": "hybrid", "prefer_long_rip_cuts": true, "allow_rotation": true, "show_cut_order": false, "allow_mixed_materials": false}
+}

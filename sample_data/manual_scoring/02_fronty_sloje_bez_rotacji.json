@@ -1,0 +1,21 @@
+{
+  "meta": {
+    "client_name": "Manual scoring",
+    "order_number": "MS-02",
+    "material": "Dab naturalny 18",
+    "notes": "Fronty z kierunkiem sloja. Rotacja czesci jest wylaczona. Ocen czy algorytm nie probuje ratowac wyniku nielegalna rotacja i czy odpad jest akceptowalny.",
+    "creation_date": "2026-07-04T16:55:00"
+  },
+  "sheet_stock": [
+    {"material": "DAB", "thickness": 18, "width": 2800, "height": 2070, "quantity": 3, "price": 310, "grain_direction": "length", "allow_rotation": false, "min_offcut_width": 200, "min_offcut_height": 200, "source": "stock"}
+  ],
+  "linear_stock": [],
+  "sheet_parts": [
+    {"name": "Front wysoki", "width": 396, "height": 1960, "quantity": 6, "material": "DAB", "thickness": 18, "allow_rotation": false, "grain_direction": "length", "label": "FW", "priority": 3, "notes": "Slaj pionowy"},
+    {"name": "Front niski", "width": 596, "height": 716, "quantity": 6, "material": "DAB", "thickness": 18, "allow_rotation": false, "grain_direction": "length", "label": "FN", "priority": 2, "notes": ""},
+    {"name": "Szuflada", "width": 596, "height": 196, "quantity": 8, "material": "DAB", "thickness": 18, "allow_rotation": false, "grain_direction": "length", "label": "SZ", "priority": 1, "notes": ""},
+    {"name": "Blendka", "width": 80, "height": 716, "quantity": 4, "material": "DAB", "thickness": 18, "allow_rotation": false, "grain_direction": "length", "label": "BL", "priority": 0, "notes": ""}
+  ],
+  "linear_parts": [],
+  "settings": {"job_type": "sheet", "algorithm": "Vertical Segmented Guillotine", "optimization_mode": "comfort", "kerf": 4, "kerf_tolerance": 0.2, "margin": 0, "sheet_allowance": 0, "min_reusable_offcut_size": 200, "display_orientation": "horizontal", "cutting_mode": "hybrid", "prefer_long_rip_cuts": true, "allow_rotation": false, "show_cut_order": false, "allow_mixed_materials": false}
+}

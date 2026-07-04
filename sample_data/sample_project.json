@@ -1,0 +1,141 @@
+{
+  "meta": {
+    "client_name": "Demo Workshop",
+    "order_number": "SAMPLE-001",
+    "material": "POM-C / PE300",
+    "notes": "Sample data for immediate 2D and 1D optimization tests.",
+    "creation_date": "2026-05-07T09:00:00"
+  },
+  "sheet_stock": [
+    {
+      "material": "POM-C",
+      "thickness": 10,
+      "width": 2000,
+      "height": 1000,
+      "quantity": 2,
+      "price": 520,
+      "grain_direction": "none",
+      "allow_rotation": true,
+      "min_offcut_width": 150,
+      "min_offcut_height": 150,
+      "source": "stock"
+    },
+    {
+      "material": "PE300",
+      "thickness": 20,
+      "width": 2000,
+      "height": 1000,
+      "quantity": 1,
+      "price": 610,
+      "grain_direction": "none",
+      "allow_rotation": true,
+      "min_offcut_width": 180,
+      "min_offcut_height": 180,
+      "source": "stock"
+    }
+  ],
+  "linear_stock": [
+    {
+      "material": "POM-C",
+      "profile": "Rod 50 mm",
+      "length": 1000,
+      "quantity": 6,
+      "price": 85,
+      "kerf": 3,
+      "min_offcut_length": 90,
+      "source": "stock"
+    }
+  ],
+  "sheet_parts": [
+    {
+      "name": "Bearing plate",
+      "width": 320,
+      "height": 220,
+      "quantity": 6,
+      "material": "POM-C",
+      "thickness": 10,
+      "allow_rotation": true,
+      "grain_direction": "none",
+      "label": "BP",
+      "priority": 2,
+      "notes": "Deburr edges"
+    },
+    {
+      "name": "Guide block",
+      "width": 180,
+      "height": 140,
+      "quantity": 10,
+      "material": "POM-C",
+      "thickness": 10,
+      "allow_rotation": true,
+      "grain_direction": "none",
+      "label": "GB",
+      "priority": 1,
+      "notes": ""
+    },
+    {
+      "name": "PE spacer",
+      "width": 260,
+      "height": 160,
+      "quantity": 5,
+      "material": "PE300",
+      "thickness": 20,
+      "allow_rotation": true,
+      "grain_direction": "none",
+      "label": "SP",
+      "priority": 1,
+      "notes": ""
+    },
+    {
+      "name": "Wear strip",
+      "width": 700,
+      "height": 80,
+      "quantity": 3,
+      "material": "POM-C",
+      "thickness": 10,
+      "allow_rotation": true,
+      "grain_direction": "none",
+      "label": "WS",
+      "priority": 0,
+      "notes": ""
+    }
+  ],
+  "linear_parts": [
+    {
+      "name": "Rod pin A",
+      "length": 240,
+      "quantity": 8,
+      "material": "POM-C",
+      "label": "A",
+      "priority": 1,
+      "notes": ""
+    },
+    {
+      "name": "Rod pin B",
+      "length": 185,
+      "quantity": 6,
+      "material": "POM-C",
+      "label": "B",
+      "priority": 0,
+      "notes": ""
+    },
+    {
+      "name": "Rod pin C",
+      "length": 120,
+      "quantity": 10,
+      "material": "POM-C",
+      "label": "C",
+      "priority": 0,
+      "notes": ""
+    }
+  ],
+  "settings": {
+    "job_type": "sheet",
+    "algorithm": "MaxRects",
+    "mode": "minimize_waste",
+    "kerf": 3,
+    "margin": 8,
+    "sheet_allowance": 0,
+    "allow_mixed_materials": false
+  }
+}

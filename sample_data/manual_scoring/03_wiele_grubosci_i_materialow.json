@@ -1,0 +1,24 @@
+{
+  "meta": {
+    "client_name": "Manual scoring",
+    "order_number": "MS-03",
+    "material": "Mix materialow",
+    "notes": "Jeden projekt z kilkoma materialami i grubosciami. Ocen czy algorytm trzyma osobne plyty dla 18 mm, 3 mm i 10 mm.",
+    "creation_date": "2026-07-04T16:55:00"
+  },
+  "sheet_stock": [
+    {"material": "LAM_BIALY", "thickness": 18, "width": 2800, "height": 2070, "quantity": 2, "price": 220, "grain_direction": "none", "allow_rotation": true, "min_offcut_width": 180, "min_offcut_height": 180, "source": "stock"},
+    {"material": "HDF", "thickness": 3, "width": 2800, "height": 2070, "quantity": 1, "price": 80, "grain_direction": "none", "allow_rotation": true, "min_offcut_width": 200, "min_offcut_height": 200, "source": "stock"},
+    {"material": "PLEXI", "thickness": 10, "width": 2000, "height": 1000, "quantity": 1, "price": 420, "grain_direction": "none", "allow_rotation": true, "min_offcut_width": 120, "min_offcut_height": 120, "source": "stock"}
+  ],
+  "linear_stock": [],
+  "sheet_parts": [
+    {"name": "Korpus bok", "width": 520, "height": 1800, "quantity": 4, "material": "LAM_BIALY", "thickness": 18, "allow_rotation": true, "grain_direction": "none", "label": "KB", "priority": 2, "notes": ""},
+    {"name": "Polka", "width": 520, "height": 680, "quantity": 8, "material": "LAM_BIALY", "thickness": 18, "allow_rotation": true, "grain_direction": "none", "label": "P", "priority": 1, "notes": ""},
+    {"name": "Plecy HDF", "width": 620, "height": 1850, "quantity": 3, "material": "HDF", "thickness": 3, "allow_rotation": true, "grain_direction": "none", "label": "HDF", "priority": 1, "notes": ""},
+    {"name": "Okno plexi", "width": 420, "height": 300, "quantity": 6, "material": "PLEXI", "thickness": 10, "allow_rotation": true, "grain_direction": "none", "label": "PX", "priority": 1, "notes": ""},
+    {"name": "Dystans plexi", "width": 80, "height": 80, "quantity": 12, "material": "PLEXI", "thickness": 10, "allow_rotation": true, "grain_direction": "none", "label": "DP", "priority": 0, "notes": ""}
+  ],
+  "linear_parts": [],
+  "settings": {"job_type": "sheet", "algorithm": "Vertical Segmented Guillotine", "optimization_mode": "comfort", "kerf": 4, "kerf_tolerance": 0.2, "margin": 0, "sheet_allowance": 0, "min_reusable_offcut_size": 180, "display_orientation": "horizontal", "cutting_mode": "hybrid", "prefer_long_rip_cuts": true, "allow_rotation": true, "show_cut_order": false, "allow_mixed_materials": false}
+}

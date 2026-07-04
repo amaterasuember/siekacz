@@ -1,0 +1,20 @@
+{
+  "meta": {
+    "client_name": "Manual scoring",
+    "order_number": "MS-08",
+    "material": "Sklejka 12",
+    "notes": "Elementy dobrane blisko limitow, rzaz 5 mm. Ocen czy kerf jest uwzgledniony i czy algorytm nie wciska elementow na styk bez miejsca na ciecie.",
+    "creation_date": "2026-07-04T16:55:00"
+  },
+  "sheet_stock": [
+    {"material": "SKLEJKA", "thickness": 12, "width": 3000, "height": 1500, "quantity": 1, "price": 180, "grain_direction": "none", "allow_rotation": true, "min_offcut_width": 120, "min_offcut_height": 120, "source": "stock"}
+  ],
+  "linear_stock": [],
+  "sheet_parts": [
+    {"name": "Pas 495", "width": 495, "height": 1490, "quantity": 3, "material": "SKLEJKA", "thickness": 12, "allow_rotation": true, "grain_direction": "none", "label": "P495", "priority": 3, "notes": ""},
+    {"name": "Pas 490", "width": 490, "height": 720, "quantity": 3, "material": "SKLEJKA", "thickness": 12, "allow_rotation": true, "grain_direction": "none", "label": "P490", "priority": 2, "notes": ""},
+    {"name": "Wypelniacz", "width": 120, "height": 120, "quantity": 12, "material": "SKLEJKA", "thickness": 12, "allow_rotation": true, "grain_direction": "none", "label": "W", "priority": 0, "notes": ""}
+  ],
+  "linear_parts": [],
+  "settings": {"job_type": "sheet", "algorithm": "Vertical Segmented Guillotine", "optimization_mode": "comfort", "kerf": 5, "kerf_tolerance": 0.2, "margin": 0, "sheet_allowance": 0, "min_reusable_offcut_size": 120, "display_orientation": "horizontal", "cutting_mode": "hybrid", "prefer_long_rip_cuts": true, "allow_rotation": true, "show_cut_order": false, "allow_mixed_materials": false}
+}

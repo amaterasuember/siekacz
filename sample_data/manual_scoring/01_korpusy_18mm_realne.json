@@ -1,0 +1,50 @@
+{
+  "meta": {
+    "client_name": "Manual scoring",
+    "order_number": "MS-01",
+    "material": "Laminat bialy 18",
+    "notes": "Typowe korpusy meblowe. Ocen czy uklad jest czytelny, czy minimalizuje realna dlugosc plyty i czy zostawia sensowny odpad.",
+    "creation_date": "2026-07-04T16:55:00"
+  },
+  "sheet_stock": [
+    {
+      "material": "LAM_BIALY",
+      "thickness": 18,
+      "width": 2800,
+      "height": 2070,
+      "quantity": 3,
+      "price": 220,
+      "grain_direction": "none",
+      "allow_rotation": true,
+      "min_offcut_width": 180,
+      "min_offcut_height": 180,
+      "source": "stock"
+    }
+  ],
+  "linear_stock": [],
+  "sheet_parts": [
+    {"name": "Bok szafy", "width": 560, "height": 1980, "quantity": 4, "material": "LAM_BIALY", "thickness": 18, "allow_rotation": true, "grain_direction": "none", "label": "BOK", "priority": 3, "notes": ""},
+    {"name": "Polka duza", "width": 560, "height": 760, "quantity": 8, "material": "LAM_BIALY", "thickness": 18, "allow_rotation": true, "grain_direction": "none", "label": "PD", "priority": 2, "notes": ""},
+    {"name": "Wieniec", "width": 560, "height": 900, "quantity": 4, "material": "LAM_BIALY", "thickness": 18, "allow_rotation": true, "grain_direction": "none", "label": "W", "priority": 2, "notes": ""},
+    {"name": "Plecy listwa", "width": 80, "height": 1980, "quantity": 4, "material": "LAM_BIALY", "thickness": 18, "allow_rotation": true, "grain_direction": "none", "label": "PL", "priority": 1, "notes": ""},
+    {"name": "Cokoly", "width": 100, "height": 760, "quantity": 6, "material": "LAM_BIALY", "thickness": 18, "allow_rotation": true, "grain_direction": "none", "label": "C", "priority": 1, "notes": ""},
+    {"name": "Male dystanse", "width": 90, "height": 120, "quantity": 12, "material": "LAM_BIALY", "thickness": 18, "allow_rotation": true, "grain_direction": "none", "label": "MD", "priority": 0, "notes": "Filler"}
+  ],
+  "linear_parts": [],
+  "settings": {
+    "job_type": "sheet",
+    "algorithm": "Vertical Segmented Guillotine",
+    "optimization_mode": "comfort",
+    "kerf": 4,
+    "kerf_tolerance": 0.2,
+    "margin": 0,
+    "sheet_allowance": 0,
+    "min_reusable_offcut_size": 180,
+    "display_orientation": "horizontal",
+    "cutting_mode": "hybrid",
+    "prefer_long_rip_cuts": true,
+    "allow_rotation": true,
+    "show_cut_order": false,
+    "allow_mixed_materials": false
+  }
+}

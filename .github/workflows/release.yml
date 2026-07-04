@@ -1,0 +1,57 @@
+name: Build and publish release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows-installer:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Inno Setup
+        shell: powershell
+        run: choco install innosetup --no-progress -y
+
+      - name: Sync installer version from app/version.py
+        shell: powershell
+        run: |
+          $versionLine = Select-String -Path app/version.py -Pattern 'APP_VERSION\s*=\s*"([^"]+)"'
+          if (-not $versionLine) { throw "APP_VERSION not found" }
+          $version = $versionLine.Matches[0].Groups[1].Value
+          (Get-Content installer_src/SIEKACZ9000.iss) `
+            -replace '#define MyAppVersion ".*"', "#define MyAppVersion `"$version`"" |
+            Set-Content installer_src/SIEKACZ9000.iss -Encoding UTF8
+          Write-Host "Building version $version"
+
+      - name: Build installer
+        shell: cmd
+        env:
+          SIEKACZ_NO_PAUSE: "1"
+        run: scripts\BUILD_INSTALLER.bat
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SIEKACZ9000_Setup
+          path: dist/installer/SIEKACZ9000_Setup.exe
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/installer/SIEKACZ9000_Setup.exe
+          generate_release_notes: true
