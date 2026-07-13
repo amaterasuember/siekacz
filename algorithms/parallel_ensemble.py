@@ -24,6 +24,7 @@ from concurrent.futures import (
     as_completed,
 )
 from copy import deepcopy
+from typing import Callable
 
 from algorithms.layout_scoring import annotate_result_metrics, score_result
 from algorithms.two_d_guillotine import optimize_2d_guillotine
@@ -34,6 +35,18 @@ from core.models import OptimizationResult, SheetPart, SheetStock
 
 _logger = logging.getLogger(__name__)
 
+ProgressCallback = Callable[[int, str], None]
+
+
+def _report_progress(callback: ProgressCallback | None, percent: int, label: str) -> None:
+    """Report a completed ensemble phase without affecting optimization."""
+    if callback is None:
+        return
+    try:
+        callback(max(0, min(100, int(percent))), label)
+    except Exception:
+        _logger.debug("Ensemble progress callback failed", exc_info=True)
+
 ALGORITHM_NAMES: tuple[str, ...] = (
     "Vertical Segmented Guillotine",
     "Guillotine",
@@ -41,7 +54,7 @@ ALGORITHM_NAMES: tuple[str, ...] = (
     "MaxRects",
 )
 
-ENSEMBLE_TIMEOUT_S: float = 60.0
+ENSEMBLE_TIMEOUT_S: float = 3600.0
 
 
 def run_named_algorithm(
@@ -82,7 +95,22 @@ def recommended_worker_count() -> int:
     return max(2, min(len(ALGORITHM_NAMES), cores))
 
 
-def _run_with_threads(args_common) -> list[tuple[str, OptimizationResult]]:
+def _run_sequential(args_common, progress_callback: ProgressCallback | None = None) -> list[tuple[str, OptimizationResult]]:
+    results: list[tuple[str, OptimizationResult]] = []
+    stock, parts, rest = args_common
+    total = len(ALGORITHM_NAMES)
+    for index, name in enumerate(ALGORITHM_NAMES, start=1):
+        _report_progress(progress_callback, 5 + int((index - 1) / total * 78), f"Algorytm {index}/{total}: {name}")
+        try:
+            res = run_named_algorithm(name, deepcopy(stock), deepcopy(parts), *rest)
+            results.append((name, res))
+        except Exception as exc:  # pragma: no cover — defensive
+            _logger.warning("Sequential ensemble algorithm %s failed: %s", name, exc)
+        _report_progress(progress_callback, 5 + int(index / total * 78), f"Zakończono {index}/{total} algorytmów")
+    return results
+
+
+def _run_with_threads(args_common, progress_callback: ProgressCallback | None = None) -> list[tuple[str, OptimizationResult]]:
     results: list[tuple[str, OptimizationResult]] = []
     stock, parts, rest = args_common
     with ThreadPoolExecutor(max_workers=recommended_worker_count()) as executor:
@@ -90,16 +118,21 @@ def _run_with_threads(args_common) -> list[tuple[str, OptimizationResult]]:
             executor.submit(run_named_algorithm, name, deepcopy(stock), deepcopy(parts), *rest): name
             for name in ALGORITHM_NAMES
         }
-        for future in as_completed(futures, timeout=ENSEMBLE_TIMEOUT_S + 5):
+        for completed, future in enumerate(as_completed(futures, timeout=ENSEMBLE_TIMEOUT_S + 5), start=1):
             name = futures[future]
             try:
                 results.append((name, future.result(timeout=ENSEMBLE_TIMEOUT_S)))
             except Exception as exc:  # pragma: no cover — defensive
                 _logger.warning("Thread ensemble algorithm %s failed: %s", name, exc)
+            _report_progress(
+                progress_callback,
+                5 + int(completed / len(futures) * 78),
+                f"Zakonczono {name} ({completed}/{len(futures)})",
+            )
     return results
 
 
-def _run_with_processes(args_common) -> list[tuple[str, OptimizationResult]]:
+def _run_with_processes(args_common, progress_callback: ProgressCallback | None = None) -> list[tuple[str, OptimizationResult]]:
     results: list[tuple[str, OptimizationResult]] = []
     stock, parts, rest = args_common
     with ProcessPoolExecutor(max_workers=recommended_worker_count()) as executor:
@@ -107,12 +140,17 @@ def _run_with_processes(args_common) -> list[tuple[str, OptimizationResult]]:
             executor.submit(run_named_algorithm, name, stock, parts, *rest): name
             for name in ALGORITHM_NAMES
         }
-        for future in as_completed(futures, timeout=ENSEMBLE_TIMEOUT_S + 15):
+        for completed, future in enumerate(as_completed(futures, timeout=ENSEMBLE_TIMEOUT_S + 15), start=1):
             name = futures[future]
             try:
                 results.append((name, future.result(timeout=ENSEMBLE_TIMEOUT_S)))
             except Exception as exc:  # pragma: no cover — defensive
                 _logger.warning("Process ensemble algorithm %s failed: %s", name, exc)
+            _report_progress(
+                progress_callback,
+                5 + int(completed / len(futures) * 78),
+                f"Zakonczono {name} ({completed}/{len(futures)})",
+            )
     return results
 
 
@@ -125,7 +163,8 @@ def run_parallel_ensemble(
     min_reusable_size: float,
     cutting_mode: str,
     optimization_mode: str,
-    use_processes: bool = True,
+    execution_mode: str = "processes",
+    progress_callback: ProgressCallback | None = None,
 ) -> OptimizationResult:
     """Evaluate every algorithm across cores; return the best-scoring result."""
     started = time.perf_counter()
@@ -133,18 +172,31 @@ def run_parallel_ensemble(
     args_common = (stock, parts, rest)
 
     pairs: list[tuple[str, OptimizationResult]] = []
-    used = "processes"
-    if use_processes:
+    used = execution_mode
+    if execution_mode == "sequential":
+        _report_progress(progress_callback, 2, "Przygotowuje algorytmy do liczenia po kolei")
+    else:
+        _report_progress(
+            progress_callback,
+            2,
+            f"Rownolegle licze {len(ALGORITHM_NAMES)} algorytmy (0/{len(ALGORITHM_NAMES)})",
+        )
+    if execution_mode == "processes":
         try:
-            pairs = _run_with_processes(args_common)
+            pairs = _run_with_processes(args_common, progress_callback)
         except (BrokenExecutor, OSError, ImportError, Exception) as exc:
             _logger.warning("Process pool unavailable (%s) — falling back to threads", exc)
             pairs = []
-    if not pairs:
+    if not pairs and execution_mode != "sequential":
         used = "threads"
-        pairs = _run_with_threads(args_common)
+        _report_progress(progress_callback, 5, "Przełączam na wykonanie awaryjne")
+        pairs = _run_with_threads(args_common, progress_callback)
+    if not pairs:
+        used = "sequential"
+        pairs = _run_sequential(args_common, progress_callback)
 
     # Score the candidates (scoring is cheap and runs in the parent).
+    _report_progress(progress_callback, 87, "Porównuję wyniki algorytmów")
     scored: list[tuple[str, OptimizationResult, tuple]] = []
     diagnostics: list[str] = []
     for name, result in pairs:
@@ -167,6 +219,7 @@ def run_parallel_ensemble(
         )
         fallback.algorithm = "Vertical Segmented Guillotine (fallback)"
         fallback.messages.append("Ensemble: wszystkie algorytmy zawiodły — użyto fallbacku.")
+        _report_progress(progress_callback, 100, "Użyto algorytmu awaryjnego")
         return fallback
 
     scored.sort(key=lambda item: item[2])
@@ -178,4 +231,5 @@ def run_parallel_ensemble(
     )
     for line in diagnostics:
         winner.messages.append(f"  • {line}")
+    _report_progress(progress_callback, 100, "Wybrano najlepszy układ")
     return winner

@@ -14,7 +14,10 @@ from PySide6.QtGui import QEnterEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QPushButton, QWidget
 
-from app.simple_window import HoverLiftFilter, SimpleCutWindow, ThemeToggleSwitch
+from app.simple_window import AlgorithmSettingsDialog, HoverLiftFilter, SimpleCutWindow, ThemeToggleSwitch
+from app.material_catalog import MaterialCatalogEntry
+from core.models import OptimizationSettings, Project
+from ui.optimization_progress import OptimizationProgressOverlay, _SAMURAI_FRAMES, _SIMS_MESSAGES
 
 
 def _app() -> QApplication:
@@ -140,18 +143,12 @@ def test_theme_toggle_switch_slides_and_emits() -> None:
     print("[OK] ThemeToggleSwitch slides, animates and emits toggled")
 
 
-def test_theme_toggle_button_is_switch_and_syncs() -> None:
-    """The window must use the animated switch and keep it in sync with theme."""
+def test_theme_toggle_is_not_exposed_in_main_window() -> None:
+    """The main window intentionally has no light/dark toggle."""
     _app()
     window = SimpleCutWindow()
-    assert isinstance(window.theme_toggle_button, ThemeToggleSwitch)
-    window._set_theme_combo("light")
-    window._update_theme_toggle_button()
-    assert window.theme_toggle_button.is_light() is True
-    window._set_theme_combo("dark")
-    window._update_theme_toggle_button()
-    assert window.theme_toggle_button.is_light() is False
-    print("[OK] window theme switch stays in sync with current theme")
+    assert not hasattr(window, "theme_toggle_button")
+    print("[OK] main window keeps the removed theme toggle hidden")
 
 
 def test_select_page_fades_in_new_widget() -> None:
@@ -166,6 +163,141 @@ def test_select_page_fades_in_new_widget() -> None:
     print("[OK] _select_page fade-in invocation safe")
 
 
+def test_progress_has_one_hundred_unique_world_facts_and_ascii_samurai_frames() -> None:
+    assert len(_SIMS_MESSAGES) == 100
+    assert len(set(_SIMS_MESSAGES)) == 100
+    assert len(_SAMURAI_FRAMES) == 8
+    assert all(
+        phase.startswith(f"{index:02d}  ")
+        and art.strip()
+        and all(ord(char) < 128 for char in art)
+        for index, (phase, art) in enumerate(_SAMURAI_FRAMES, 1)
+    )
+    print("[OK] progress deck has 100 unique world facts and ASCII samurai frames")
+
+
+def test_progress_facts_do_not_repeat_before_the_full_deck_is_shown() -> None:
+    _app()
+    overlay = OptimizationProgressOverlay()
+    shown = [overlay._msg_label]
+    for _ in range(len(_SIMS_MESSAGES) - 1):
+        overlay._advance_message()
+        shown.append(overlay._msg_label)
+    assert len(set(shown)) == len(_SIMS_MESSAGES)
+    previous = shown[-1]
+    overlay._advance_message()
+    assert overlay._msg_label != previous
+    print("[OK] progress facts use a no-repeat shuffle bag")
+
+
+def test_calculation_render_loops_and_stops() -> None:
+    _app()
+    overlay = OptimizationProgressOverlay()
+    overlay.resize(1100, 720)
+    assert overlay._samurai_movie_available
+    overlay.start(Project(settings=OptimizationSettings(animation_mode="quality")))
+    QTest.qWait(80)
+    assert overlay._samurai_movie_label.isVisible()
+    assert overlay._samurai_movie.state().name == "Running"
+    overlay.stop()
+    assert not overlay._samurai_movie_label.isVisible()
+    assert overlay._samurai_movie.state().name == "NotRunning"
+    print("[OK] calculation render loops and stops with the overlay")
+
+
+def test_economy_calculation_animation_skips_video_render() -> None:
+    _app()
+    overlay = OptimizationProgressOverlay()
+    project = Project(settings=OptimizationSettings(animation_mode="economy"))
+    overlay.start(project)
+    assert overlay._animation_mode == "economy"
+    assert not overlay._samurai_movie_label.isVisible()
+    assert overlay._samurai_movie.state().name == "NotRunning"
+    overlay.stop()
+    print("[OK] economy calculation animation skips the video render")
+
+
+def test_progress_overlay_keeps_the_real_optimizer_status_separate_from_the_fact() -> None:
+    _app()
+    overlay = OptimizationProgressOverlay()
+    overlay.start(Project(settings=OptimizationSettings(animation_mode="economy")))
+    overlay.set_progress(42, "Zakonczono Skyline (2/4)")
+    assert overlay.state.globalProgressPercent == 42
+    assert overlay.state.currentStageLabel == "Zakonczono Skyline (2/4)"
+    assert overlay._msg_label in _SIMS_MESSAGES
+    overlay.stop()
+    print("[OK] progress overlay exposes the real optimizer status above the fact")
+
+
+def test_algorithm_settings_uses_left_navigation_and_persists_new_controls() -> None:
+    _app()
+    dialog = AlgorithmSettingsDialog(None, {
+        "saw_feed_m_per_min": 18.5,
+        "animation_mode": "economy",
+    })
+    assert dialog._settings_pages.count() == 6
+    assert len(dialog._settings_nav_buttons) == 6
+    assert [button.text() for button in dialog._settings_nav_buttons] == [
+        "Rozkrój", "Technologia", "Wydajność", "Wygląd", "Cennik", "Silnik",
+    ]
+    dialog._set_settings_page(3)
+    assert dialog._settings_pages.currentIndex() == 3
+    assert dialog._animation_economy.isChecked()
+    dialog._feed_spin.setValue(21.0)
+    dialog._apply_and_close()
+    result = dialog.result_settings()
+    assert result["saw_feed_m_per_min"] == 21.0
+    assert result["animation_mode"] == "economy"
+    print("[OK] settings dialog has navigation, feed and animation controls")
+
+
+def test_main_window_keeps_catalog_import_in_settings_and_uses_full_width_thickness() -> None:
+    _app()
+    window = SimpleCutWindow()
+    assert window._algo_btn.text() == "Ustawienia"
+    assert not hasattr(window, "import_catalog_button")
+    assert window.catalog_thickness_selector.sizePolicy().horizontalPolicy().name == "Expanding"
+    dialog = AlgorithmSettingsDialog(window, window._algo_settings)
+    dialog._set_settings_page(4)
+    assert dialog._catalog_import_button.isEnabled()
+    dialog.close()
+    window.close()
+    print("[OK] catalog import moved to settings and thickness control expands")
+
+
+def test_catalog_thickness_only_updates_the_last_stock_row() -> None:
+    _app()
+    window = SimpleCutWindow()
+    window.stock_table.setRowCount(0)
+    window._add_stock_row({"thickness": 8, "width": 1000, "height": 2000, "quantity": 1})
+    window._add_stock_row({"thickness": 8, "width": 1500, "height": 3000, "quantity": 1})
+    window._add_blank_stock_row_and_focus()
+    window._material_catalog = [
+        MaterialCatalogEntry("PA6", 8, 100, 123, "PA6 PŁYTA GR. 8 MM CZARNA"),
+        MaterialCatalogEntry("PA6", 18, 120, 148, "PA6 PŁYTA GR. 18 MM CZARNA"),
+    ]
+    window._populate_material_selector()
+    window.material_selector.setCurrentIndex(0)
+    window.catalog_thickness_selector.setCurrentIndex(1)
+    assert window.stock_table.item(0, 0).text() == "8"
+    assert window.stock_table.item(1, 0).text() == "8"
+    assert window.stock_table.item(2, 0).text() == "18"
+
+    window.parts.setRowCount(0)
+    window.add_part_row([8, 100, 120, 1])
+    window.add_part_row()
+    window.catalog_thickness_selector.setCurrentIndex(0)
+    assert window.parts.item(0, 1).text() == "8"
+    assert window.parts.item(1, 1).text() == "8"
+    window.catalog_thickness_selector.setCurrentIndex(1)
+    assert window.parts.item(0, 1).text() == "8"
+    assert window.parts.item(1, 1).text() == "18"
+
+    assert window.parts.item(0, 1).flags() & Qt.ItemFlag.ItemIsEditable
+    window.close()
+    print("[OK] catalog thickness only changes the last stock row")
+
+
 if __name__ == "__main__":
     test_fade_in_does_not_crash_or_leak_effect()
     test_pulse_starts_and_stops_cleanly()
@@ -175,6 +307,14 @@ if __name__ == "__main__":
     test_animate_status_utilization_runs_and_settles()
     test_hover_lift_filter_creates_shadow_on_enter()
     test_theme_toggle_switch_slides_and_emits()
-    test_theme_toggle_button_is_switch_and_syncs()
+    test_theme_toggle_is_not_exposed_in_main_window()
     test_select_page_fades_in_new_widget()
+    test_progress_has_one_hundred_unique_world_facts_and_ascii_samurai_frames()
+    test_progress_facts_do_not_repeat_before_the_full_deck_is_shown()
+    test_calculation_render_loops_and_stops()
+    test_economy_calculation_animation_skips_video_render()
+    test_progress_overlay_keeps_the_real_optimizer_status_separate_from_the_fact()
+    test_algorithm_settings_uses_left_navigation_and_persists_new_controls()
+    test_main_window_keeps_catalog_import_in_settings_and_uses_full_width_thickness()
+    test_catalog_thickness_only_updates_the_last_stock_row()
     print("\ntest_animations: OK")

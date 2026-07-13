@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from core.models import OptimizationResult, PlacedSheetPart, SheetLayout, SheetPart, SheetStock
+from core.models import OptimizationResult, PlacedSheetPart, SheetLayout, SheetPart, SheetStock, materials_are_compatible
 
 Rect = tuple[float, float, float, float]
 
@@ -159,7 +159,7 @@ def optimize_2d_maxrects(
     for part in _expand_parts(parts):
         placed = False
         for layout in layouts:
-            if layout.stock.material != part.material or abs(layout.stock.thickness - part.thickness) > 0.001:
+            if not materials_are_compatible(layout.stock.material, part.material) or abs(layout.stock.thickness - part.thickness) > 0.001:
                 continue
             if _place_part(layout, free_by_layout[id(layout)], part, kerf):
                 placed = True
@@ -171,7 +171,7 @@ def optimize_2d_maxrects(
             (
                 i
                 for i, item in enumerate(available_stock)
-                if item.material == part.material
+                if materials_are_compatible(item.material, part.material)
                 and abs(item.thickness - part.thickness) < 0.001
                 and (
                     (part.width <= item.width - margin * 2 and part.height <= item.height - margin * 2)

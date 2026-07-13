@@ -4,7 +4,7 @@ import math
 from collections.abc import Iterable
 from typing import Any
 
-from .models import LinearPart, LinearStock, OptimizationSettings, Project, SheetPart, SheetStock
+from .models import LinearPart, LinearStock, OptimizationSettings, Project, SheetPart, SheetStock, materials_are_compatible
 
 
 def safeNumber(value: object, fallback: float | None = None) -> float | None:
@@ -52,13 +52,16 @@ def validatePlate(data: Any, row: int = 1) -> tuple[SheetStock | None, list[str]
     width = safeNumber(_field(data, "width"))
     height = safeNumber(_field(data, "height"))
     quantity = _safe_int(_field(data, "quantity"))
+    stack_size = _safe_int(_field(data, "stack_size", 1))
     if width is None or height is None or quantity is None:
         errors.append(f"Popraw płytę w wierszu {row}. Wpisz szerokość, wysokość i całkowitą ilość.")
     elif width <= 0 or height <= 0 or quantity <= 0:
         errors.append(f"Popraw płytę w wierszu {row}. Wymiary i ilość muszą być większe od zera.")
+    elif stack_size is None or stack_size <= 0 or stack_size > quantity:
+        errors.append(f"Płyta w wierszu {row}: sztapel musi być od 1 do ilości płyt.")
     if errors:
         return None, errors
-    assert width is not None and height is not None and quantity is not None
+    assert width is not None and height is not None and quantity is not None and stack_size is not None
     return (
         SheetStock(
             material=_clean_text(_field(data, "material", "standard")) or "standard",
@@ -75,6 +78,7 @@ def validatePlate(data: Any, row: int = 1) -> tuple[SheetStock | None, list[str]
             nominal_width=safeNumber(_field(data, "nominal_width", width), width) or width,
             nominal_height=safeNumber(_field(data, "nominal_height", height), height) or height,
             sheet_allowance=max(0.0, safeNumber(_field(data, "sheet_allowance", 0), 0) or 0),
+            stack_size=stack_size,
         ),
         [],
     )
@@ -223,7 +227,7 @@ def validate_sheet_parts(parts: Iterable[SheetPart], stock: Iterable[SheetStock]
         if error:
             errors.append(error)
         fits = any(
-            s.material == part.material
+            materials_are_compatible(s.material, part.material)
             and abs(s.thickness - part.thickness) < 0.001
             and (
                 (part.width <= s.width and part.height <= s.height)

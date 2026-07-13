@@ -246,7 +246,7 @@ def test_layout_view_horizontal_orientation_keeps_height_axis_as_workflow_direct
     view = LayoutView()
     layout = SheetLayout(stock=SheetStock("standard", 1, 2050, 3050, 1), sheet_index=1)
 
-    display_w, display_h, rotated = view._display_sheet_geometry(layout)
+    display_w, display_h, rotated, _ = view._display_sheet_geometry(layout)
     assert view.display_orientation == "horizontal"
     assert rotated
     assert round(display_w) == 3050
@@ -257,7 +257,7 @@ def test_layout_view_horizontal_orientation_keeps_height_axis_as_workflow_direct
     assert mapped_special[0] > mapped_regular[0], "1000 x 1450 should render at the end of the height-axis strip"
 
     view.set_display_orientation("vertical")
-    display_w, display_h, rotated = view._display_sheet_geometry(layout)
+    display_w, display_h, rotated, _ = view._display_sheet_geometry(layout)
     assert not rotated
     assert round(display_w) == 2050
     assert round(display_h) == 3050

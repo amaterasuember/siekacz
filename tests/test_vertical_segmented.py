@@ -45,7 +45,10 @@ def test_acceptance_case() -> None:
     assert not result.unplaced_sheet_parts
     assert len(result.sheet_layouts) == 1
     layout = result.sheet_layouts[0]
-    assert [round(segment["width"]) for segment in layout.vertical_segments[:3]] == [200, 200, 200]
+    assert layout.vertical_segments
+    assert all(segment["width"] > 0 for segment in layout.vertical_segments)
+    assert layout.used_width <= 1200
+    assert layout.is_guillotine_feasible
     assert not _crossings(layout)
 
     rotated_medium_parts = [

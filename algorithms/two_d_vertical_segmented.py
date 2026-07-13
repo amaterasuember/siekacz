@@ -18,7 +18,7 @@ from algorithms.part_classification import (
     strategic_dimension as _shared_strategic_dimension,
 )
 from algorithms.vertical_candidate_parallel import build_strategy_candidates_parallel
-from core.models import OptimizationResult, PlacedSheetPart, SheetLayout, SheetPart, SheetStock
+from core.models import OptimizationResult, PlacedSheetPart, SheetLayout, SheetPart, SheetStock, materials_are_compatible
 
 Rect = tuple[float, float, float, float]
 EPS = 0.001
@@ -634,7 +634,7 @@ def _create_segment(
 
 
 def _matching_layout(layout: SheetLayout, part: SheetPart) -> bool:
-    return layout.stock.material == part.material and abs(layout.stock.thickness - part.thickness) < EPS
+    return materials_are_compatible(layout.stock.material, part.material) and abs(layout.stock.thickness - part.thickness) < EPS
 
 
 def _place_existing(
@@ -705,7 +705,7 @@ def _open_new_sheet(
         (
             index
             for index, stock in enumerate(available_stock)
-            if stock.material == part.material and abs(stock.thickness - part.thickness) < EPS and _part_fits_stock(part, stock, margin)
+            if materials_are_compatible(stock.material, part.material) and abs(stock.thickness - part.thickness) < EPS and _part_fits_stock(part, stock, margin)
         ),
         None,
     )
@@ -1904,13 +1904,18 @@ def _sport_score(result: OptimizationResult, kerf: float, min_reusable_size: flo
     # filler parts deferred to missing-sheet waste bands (moderate penalty).
     _nf_unplaced = _count_unplaced_non_fillers(result)
     _filler_unplaced = len(result.unplaced_sheet_parts) - _nf_unplaced
+    _mixed_orientation_penalty = _mixed_orientation_group_penalty(result)
     return (
         _nf_unplaced * 100_000_000_000.0 + _filler_unplaced * 100_000_000.0,
         len(layouts) * 1_000_000.0,
         infeasible * 100_000_000.0,
         _constraining_rotation_count(result) * 20_000_000.0,
+        # Material saved along the long axis is a production priority.
+        # Mixed orientations remain legal and are only a readability
+        # tie-breaker once board count and consumed material are comparable.
         _total_saved_used_length(result) * 5_000_000.0,
         _total_saved_consumed_area(result) * 250.0,
+        _mixed_orientation_penalty * 500_000_000.0,
         -placed_count * 250_000.0,
         -_residual_recovery_rotation_count(result) * 20_000_000.0,
         waste_area * 10.0,
@@ -2057,13 +2062,15 @@ def _comfort_score(result: OptimizationResult, kerf: float, min_reusable_size: f
     mixed_orientation_penalty = _mixed_orientation_group_penalty(result)
     strip_count = _total_strip_count(result)
     return (
+        infeasible * 900_000_000_000_000.0,
         _nf_unplaced * 1_000_000_000_000.0 + _filler_unplaced * 1_000_000_000.0,
-        infeasible * 900_000_000_000.0,
         len(result.sheet_layouts) * 1_000_000_000.0,
         _total_saved_used_length(result) * 5_000_000.0,
         _total_saved_consumed_area(result) * 250.0,
         orientation_penalty * 75_000_000.0,
-        mixed_orientation_penalty * 1_000_000.0,
+        # A mixed orientation is fully legal. Prefer a shorter consumed board
+        # first; only use this as a late readability tie-breaker.
+        mixed_orientation_penalty * 50_000_000.0,
         strip_count * 100_000.0,
         -recovered_rotations * 120_000_000.0,
         secondary_rotations * 20_000_000.0,
@@ -3300,28 +3307,53 @@ def _best_bottom_strip_plan(
         return None
 
     best: tuple[int, int, int, float] | None = None
-    max_rows = int((usable_height + kerf) // (wide.height + kerf))
+    best_score: tuple[int, float, int] | None = None
+    max_rows = int((usable_height + kerf + EPS) // (wide.height + kerf))
     for bottom_rows in range(1, max_rows + 1):
         bottom_height = bottom_rows * wide.height + max(0, bottom_rows - 1) * kerf
         top_height = usable_height - bottom_height - kerf
         if top_height + EPS < tall.height:
             continue
-        top_capacity = int((usable_width + kerf) // (tall.width + kerf))
-        bottom_cols = int((usable_width + kerf) // (wide.width + kerf))
+            
+        top_capacity = int((usable_width + kerf + EPS) // (tall.width + kerf))
+        bottom_cols = int((usable_width + kerf + EPS) // (wide.width + kerf))
         bottom_capacity = bottom_rows * bottom_cols
-        placed = min(len(group_parts), top_capacity + bottom_capacity)
-        if placed <= top_capacity:
-            continue
-        used_width = max(
-            min(top_capacity, placed) * tall.width + max(0, min(top_capacity, placed) - 1) * kerf,
-            min(bottom_cols, placed - top_capacity) * wide.width + max(0, min(bottom_cols, placed - top_capacity) - 1) * kerf,
-        )
-        score = (placed, placed - top_capacity, -bottom_rows, -used_width)
-        if best is None or score > (best[0], best[1], -best[2], -best[3]):
-            best = (placed, placed - top_capacity, bottom_rows, used_width)
+        
+        max_possible_placed = min(len(group_parts), top_capacity + bottom_capacity)
+        
+        for placed in range(1, max_possible_placed + 1):
+            min_bottom = max(0, placed - top_capacity)
+            max_bottom = min(placed, bottom_capacity)
+            
+            for bottom_count in range(min_bottom, max_bottom + 1):
+                top_count = placed - bottom_count
+                top_width = top_count * tall.width + max(0, top_count - 1) * kerf if top_count > 0 else 0.0
+                
+                if bottom_count > 0:
+                    b_cols_used = (bottom_count + bottom_rows - 1) // bottom_rows
+                    bottom_width = b_cols_used * wide.width + max(0, b_cols_used - 1) * kerf
+                else:
+                    bottom_width = 0.0
+                    
+                used_width = max(top_width, bottom_width)
+                if bottom_count == 0:
+                    continue
+                
+                score = (placed, -used_width, bottom_count)
+                if best is None or best_score is None or score > best_score:
+                    best = (placed, bottom_count, bottom_rows, used_width)
+                    best_score = score
+
     if best is None:
         return None
-    placed, bottom_count, bottom_rows, _ = best
+    placed, bottom_count, bottom_rows, used_width = best
+    
+    top_only_capacity = int((usable_width + kerf + EPS) // (tall.width + kerf))
+    if placed <= top_only_capacity:
+        top_only_width = placed * tall.width + max(0, placed - 1) * kerf
+        if used_width >= top_only_width - EPS:
+            return None
+
     top_count = placed - bottom_count
     return tall, wide, top_count, bottom_count, bottom_rows
 
@@ -3613,8 +3645,10 @@ def _build_result(
         utilization=used_area / total_area * 100.0 if total_area else 0.0,
         messages=messages,
     )
-    annotate_result_metrics(result, kerf, max(200.0, min((item.min_offcut_width for item in stock), default=200.0)))
-    result.reusable_offcuts = build_reusable_offcuts(result.sheet_layouts, max(200.0, min((item.min_offcut_width for item in stock), default=200.0)))
+    # Fallback to MIN_REUSABLE_REMNANT_MM (80.0) if stock doesn't specify, or use the stock's min offcut.
+    min_size = max(80.0, min((item.min_offcut_width for item in stock), default=80.0))
+    annotate_result_metrics(result, kerf, min_size)
+    result.reusable_offcuts = build_reusable_offcuts(result.sheet_layouts, min_size)
     return result
 
 
@@ -3636,6 +3670,25 @@ def optimize_2d_vertical_segmented(
     # is True. Candidates that use _stock_orientation_sets internally were
     # already symmetric, but this guarantees the rest is too.
     stock = [_canonicalize_stock_orientation(item) for item in stock]
+    unmatched_parts = [
+        part
+        for part in parts
+        if not any(
+            materials_are_compatible(item.material, part.material) and abs(item.thickness - part.thickness) < EPS
+            for item in stock
+        )
+    ]
+    if unmatched_parts:
+        details = ", ".join(
+            f"{part.material or 'bez nazwy'} gr. {part.thickness:g} mm"
+            for part in unmatched_parts
+        )
+        return OptimizationResult(
+            job_type="sheet",
+            algorithm="Vertical Segmented Guillotine",
+            unplaced_sheet_parts=_expand_parts(parts),
+            messages=[f"Brak zgodnej płyty dla formatek: {details}."],
+        )
     candidates: list[OptimizationResult] = []
     production_mode = (cutting_mode or "hybrid").lower() != "free"
     drive_mode = (optimization_mode or "comfort").lower()
@@ -3794,6 +3847,57 @@ def optimize_2d_vertical_segmented(
     for candidate in candidates:
         annotate_guillotine_result(candidate, kerf, min_reusable_size)
 
+    # Candidate pruning uses generic remnant metrics. A mixed-orientation
+    # candidate needs protection only when it improves the primary production
+    # objectives over every uniform candidate. This keeps compact mixed layouts
+    # alive without letting them displace a genuinely better uniform cut plan.
+    pre_prune_pool = candidates
+    if production_mode:
+        feasible_before_prune = [
+            candidate
+            for candidate in candidates
+            if all(layout.is_guillotine_feasible for layout in candidate.sheet_layouts)
+        ]
+        if feasible_before_prune:
+            pre_prune_pool = feasible_before_prune
+    score_before_prune = _sport_score if drive_mode == "sport" else _comfort_score
+    mixed_candidates = [
+        candidate
+        for candidate in pre_prune_pool
+        if _mixed_orientation_group_penalty(candidate) > 0
+    ]
+    uniform_candidates = [
+        candidate
+        for candidate in pre_prune_pool
+        if _mixed_orientation_group_penalty(candidate) == 0
+    ]
+
+    def protection_priority(candidate: OptimizationResult) -> tuple[float, ...]:
+        return (
+            float(sum(1 for layout in candidate.sheet_layouts if layout.parts and not layout.is_guillotine_feasible)),
+            float(_count_unplaced_non_fillers(candidate)),
+            float(len(candidate.unplaced_sheet_parts)),
+            float(len(candidate.sheet_layouts)),
+            _total_saved_used_length(candidate),
+            _total_saved_consumed_area(candidate),
+        )
+
+    def protection_key(candidate: OptimizationResult) -> tuple[object, ...]:
+        return (
+            protection_priority(candidate),
+            score_before_prune(candidate, kerf, min_reusable_size),
+            _long_axis_tiebreak(candidate),
+        )
+
+    best_mixed = min(mixed_candidates, key=protection_key) if mixed_candidates else None
+    best_uniform = min(uniform_candidates, key=protection_key) if uniform_candidates else None
+    protected_candidate = (
+        best_mixed
+        if best_mixed is not None
+        and (best_uniform is None or protection_priority(best_mixed) < protection_priority(best_uniform))
+        else None
+    )
+
     generated_count = len(candidates)
     candidates, pruned_count = prune_dominated_candidates(
         candidates,
@@ -3803,6 +3907,9 @@ def optimize_2d_vertical_segmented(
         _total_saved_used_length,
         _total_saved_consumed_area,
     )
+    if protected_candidate is not None and not any(candidate is protected_candidate for candidate in candidates):
+        candidates.append(protected_candidate)
+        pruned_count = max(0, pruned_count - 1)
 
     candidate_debug = [
         _candidate_debug_line(f"{index + 1}/{candidate.algorithm}", candidate, kerf, min_reusable_size)
@@ -3822,15 +3929,7 @@ def optimize_2d_vertical_segmented(
         # candidate places the same number of structural parts as zero-unplaced regulars,
         # _min_nf_unplaced==0 and both sets are included; the scorer's split penalty
         # (non-filler=1e12, filler=1e9) then picks the better one.
-        _min_nf_unplaced = min(
-            (_count_unplaced_non_fillers(c) for c in feasible_layout_candidates),
-            default=len(parts),
-        )
-        feasible_candidates = [
-            candidate
-            for candidate in feasible_layout_candidates
-            if _count_unplaced_non_fillers(candidate) <= _min_nf_unplaced
-        ]
+        feasible_candidates = feasible_layout_candidates
         if drive_mode == "sport":
             selectable = feasible_candidates or feasible_layout_candidates or candidates
         else:
@@ -3839,6 +3938,7 @@ def optimize_2d_vertical_segmented(
                 for candidate in feasible_candidates
                 if (
                     "strip candidate" in candidate.algorithm.lower()
+                    or "mandatory vertical strip" in candidate.algorithm.lower()
                     or "uniform grid" in candidate.algorithm.lower()
                     or "orientation split" in candidate.algorithm.lower()
                     or "non-filler-first" in candidate.algorithm.lower()
@@ -3878,6 +3978,9 @@ def optimize_2d_vertical_segmented(
                         and _long_axis_tiebreak(best_any) < _long_axis_tiebreak(best_strip)
                     ):
                         selectable = feasible_candidates
+
+    if protected_candidate is not None and not any(candidate is protected_candidate for candidate in selectable):
+        selectable = [*selectable, protected_candidate]
 
     if drive_mode == "sport":
         selected = min(

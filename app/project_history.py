@@ -210,6 +210,7 @@ def result_from_dict(data: dict[str, Any] | None) -> OptimizationResult | None:
         fragmentation_score=float(data.get("fragmentation_score", 0.0)),
         manufacturing_score=float(data.get("manufacturing_score", 0.0)),
         total_estimated_cut_time_s=float(data.get("total_estimated_cut_time_s", 0.0)),
+        saw_feed_m_per_min=float(data.get("saw_feed_m_per_min", 12.0)),
         messages=list(data.get("messages", [])),
     )
 

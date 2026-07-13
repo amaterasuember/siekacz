@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from core.models import OptimizationResult, PlacedSheetPart, SheetLayout, SheetPart, SheetStock
+from core.models import OptimizationResult, PlacedSheetPart, SheetLayout, SheetPart, SheetStock, materials_are_compatible
 
 
 def _expand_parts(parts: list[SheetPart]) -> list[SheetPart]:
@@ -77,7 +77,7 @@ def optimize_2d_skyline(
     for part in _expand_parts(parts):
         placed = False
         for layout in layouts:
-            if layout.stock.material == part.material and abs(layout.stock.thickness - part.thickness) < 0.001:
+            if materials_are_compatible(layout.stock.material, part.material) and abs(layout.stock.thickness - part.thickness) < 0.001:
                 if _place(layout, shelves_by_layout[id(layout)], part, kerf, margin):
                     placed = True
                     break
@@ -88,7 +88,7 @@ def optimize_2d_skyline(
             (
                 i
                 for i, item in enumerate(available_stock)
-                if item.material == part.material
+                if materials_are_compatible(item.material, part.material)
                 and abs(item.thickness - part.thickness) < 0.001
                 and any(pw <= item.width - margin * 2 and ph <= item.height - margin * 2 for pw, ph, _ in _orientations(part, item))
             ),

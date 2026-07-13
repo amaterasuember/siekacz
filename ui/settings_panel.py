@@ -60,6 +60,7 @@ class SettingsPanel(QWidget):
         cutting_form.addRow("Domyślny rzaz", self.default_kerf)
         cutting_form.addRow("Domyślny margines", self.default_margin)
         cutting_form.addRow("Naddatek płyty do obliczeń", self.sheet_allowance)
+        cutting_form.addRow("Min. użyteczny odpad", self.min_reusable_offcut)
         cutting_form.addRow("Domyślny materiał", self.default_material)
         cutting_group = QGroupBox("Rozkrój")
         cutting_group.setObjectName("glassPanel")
@@ -124,7 +125,7 @@ class SettingsPanel(QWidget):
         return self.sheet_allowance.value()
 
     def min_reusable_offcut_value(self) -> float:
-        return 0.0
+        return self.min_reusable_offcut.value()
 
     def set_sheet_allowance(self, value: float) -> None:
         self.sheet_allowance.blockSignals(True)
@@ -133,7 +134,7 @@ class SettingsPanel(QWidget):
 
     def set_min_reusable_offcut(self, value: float) -> None:
         self.min_reusable_offcut.blockSignals(True)
-        self.min_reusable_offcut.setValue(0.0)
+        self.min_reusable_offcut.setValue(max(0.0, float(value or 0.0)))
         self.min_reusable_offcut.blockSignals(False)
 
     def load(self) -> None:
@@ -143,8 +144,10 @@ class SettingsPanel(QWidget):
         self.default_kerf.setValue(float(repositories.get_setting("default_kerf", 3.0)))
         self.default_margin.setValue(float(repositories.get_setting("default_margin", 0.0)))
         self.sheet_allowance.setValue(float(repositories.get_setting("sheet_allowance", 0.0)))
-        self.min_reusable_offcut.setValue(0.0)
-        repositories.set_setting("min_reusable_offcut_size", 0.0)
+        min_offcut = float(repositories.get_setting("min_reusable_offcut_size", 200.0))
+        if min_offcut < 10.0:  # Fix for users who had the 0.0 bug saved in their DB
+            min_offcut = 200.0
+        self.min_reusable_offcut.setValue(min_offcut)
         self.default_material.setText(repositories.get_setting("default_material", ""))
         self.company_name.setText(repositories.get_setting("company_name", ""))
         self.logo_path.setText(repositories.get_setting("logo_path", ""))
@@ -157,7 +160,7 @@ class SettingsPanel(QWidget):
         repositories.set_setting("default_kerf", self.default_kerf.value())
         repositories.set_setting("default_margin", self.default_margin.value())
         repositories.set_setting("sheet_allowance", self.sheet_allowance.value())
-        repositories.set_setting("min_reusable_offcut_size", 0.0)
+        repositories.set_setting("min_reusable_offcut_size", self.min_reusable_offcut.value())
         repositories.set_setting("default_material", self.default_material.text())
         repositories.set_setting("company_name", self.company_name.text())
         repositories.set_setting("logo_path", self.logo_path.text())

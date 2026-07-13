@@ -29,16 +29,20 @@ def _friendly_calculation_error(exc: BaseException) -> str:
     )
 
 
-def run_calculation_payload(project: Project | list[Project]):
+def run_calculation_payload(project: Project | list[Project], progress_callback=None):
     if isinstance(project, list):
-        return optimize_sheet_order(project)
-    return optimize_sheet_project(project)
+        return optimize_sheet_order(project, progress_callback=progress_callback)
+    return optimize_sheet_project(project, progress_callback=progress_callback)
 
 
 def calculation_process_entry(project: Project | list[Project], conn: Connection) -> None:
-    """Run optimization in a killable child process and send one result packet."""
+    """Run optimization in a killable child process and stream real phase progress."""
+    def report_progress(percent: int, label: str) -> None:
+        conn.send(("progress", (int(percent), str(label))))
+
     try:
-        conn.send(("result", run_calculation_payload(project)))
+        report_progress(0, "Uruchamiam obliczenia")
+        conn.send(("result", run_calculation_payload(project, progress_callback=report_progress)))
     except BaseException as exc:
         conn.send(("error", _friendly_calculation_error(exc)))
     finally:

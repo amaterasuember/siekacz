@@ -8,6 +8,7 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from copy import deepcopy
 from dataclasses import replace
+from typing import Callable
 
 from PySide6.QtCore import QObject, Signal, Slot
 
@@ -18,10 +19,31 @@ from algorithms.part_classification import is_small_filler_part
 from algorithms.two_d_maxrects import optimize_2d_maxrects
 from algorithms.two_d_skyline import optimize_2d_skyline
 from algorithms.two_d_vertical_segmented import optimize_2d_vertical_segmented
-from core.models import OptimizationResult, Project, SheetPart, SheetStock
+from core.models import OptimizationResult, Project, SheetPart, SheetStock, materials_are_compatible
 
 
 _logger = logging.getLogger(__name__)
+
+ProgressCallback = Callable[[int, str], None]
+
+
+def _report_progress(callback: ProgressCallback | None, percent: int, label: str) -> None:
+    if callback is None:
+        return
+    try:
+        callback(max(0, min(100, int(percent))), label)
+    except Exception:
+        _logger.debug("Optimizer progress callback failed", exc_info=True)
+
+
+def _scaled_progress(callback: ProgressCallback | None, start: int, end: int) -> ProgressCallback | None:
+    if callback is None:
+        return None
+
+    def scaled(percent: int, label: str) -> None:
+        callback(start + round((end - start) * max(0, min(100, percent)) / 100), label)
+
+    return scaled
 
 KERF_TOLERANCE_MM = 0.2
 
@@ -74,6 +96,25 @@ def _positive_int(value: object, label: str) -> int:
     return int(rounded)
 
 
+def _sheet_stock_matches_part(stock: SheetStock, part: SheetPart) -> bool:
+    """Return whether a board can physically supply a sheet part."""
+    return (
+        materials_are_compatible(stock.material, part.material)
+        and abs(float(stock.thickness) - float(part.thickness)) < 0.001
+    )
+
+
+def _assert_result_sheet_compatibility(result: OptimizationResult) -> None:
+    """Refuse a result that contains a part cut from another board type."""
+    for layout in list(result.sheet_layouts) + list(result.missing_sheet_layouts):
+        for placement in layout.parts:
+            if not _sheet_stock_matches_part(layout.stock, placement.part):
+                raise RuntimeError(
+                    "Blokada bezpieczenstwa: algorytm zwrocil formatke "
+                    f"gr. {placement.part.thickness:g} mm z plyty gr. {layout.stock.thickness:g} mm."
+                )
+
+
 def _validate_project_for_optimization(project: Project) -> None:
     settings = project.settings
     kerf = _finite_number(settings.kerf, "Kerf")
@@ -109,6 +150,9 @@ def _validate_project_for_optimization(project: Project) -> None:
         _positive_number(stock.height, f"Płyta {index} - wysokość")
         _positive_number(stock.thickness, f"Płyta {index} - grubość")
         _positive_int(stock.quantity, f"Płyta {index} - ilość")
+        stack_size = _positive_int(getattr(stock, "stack_size", 1), f"Płyta {index} - sztapel")
+        if stack_size > stock.quantity:
+            raise ValueError(f"Płyta {index}: sztapel ({stack_size}) nie może być większy od ilości płyt ({stock.quantity}).")
         _non_negative_number(stock.min_offcut_width, f"Płyta {index} - minimalny odpad szerokość")
         _non_negative_number(stock.min_offcut_height, f"Płyta {index} - minimalny odpad wysokość")
         # Margin must leave a usable area in both dimensions — otherwise the
@@ -128,6 +172,12 @@ def _validate_project_for_optimization(project: Project) -> None:
         _positive_number(part.height, f"Formatka {index} - wysokość")
         _positive_number(part.thickness, f"Formatka {index} - grubość")
         _positive_int(part.quantity, f"Formatka {index} - ilość")
+        if not any(_sheet_stock_matches_part(stock, part) for stock in project.sheet_stock):
+            material = str(part.material or "bez nazwy").strip() or "bez nazwy"
+            raise ValueError(
+                f"Formatka {index} ({material}, gr. {part.thickness:g} mm) nie ma zgodnej płyty. "
+                "Dodaj płytę o tym samym materiale i grubości."
+            )
 
 
 def _effective_kerf(kerf: float, tolerance: float = KERF_TOLERANCE_MM) -> float:
@@ -210,14 +260,21 @@ def _run_sheet_algorithm(
     min_reusable_size: float = 200.0,
     cutting_mode: str = "hybrid",
     optimization_mode: str = "comfort",
+    execution_mode: str = "processes",
+    progress_callback: ProgressCallback | None = None,
 ) -> OptimizationResult:
     if _is_ensemble_request(algorithm):
         return _run_ensemble_sheet_algorithm(
             stock, parts, kerf, margin, mode,
             min_reusable_size, cutting_mode, optimization_mode,
+            execution_mode=execution_mode,
+            progress_callback=progress_callback,
         )
-    _, runner = _resolve_algorithm(algorithm)
-    return runner(stock, parts, kerf, margin, mode, min_reusable_size, cutting_mode, optimization_mode)
+    algorithm_name, runner = _resolve_algorithm(algorithm)
+    _report_progress(progress_callback, 8, f"Licze uklad: {algorithm_name}")
+    result = runner(stock, parts, kerf, margin, mode, min_reusable_size, cutting_mode, optimization_mode)
+    _report_progress(progress_callback, 100, "Algorytm zakończył obliczenia")
+    return result
 
 
 def _run_ensemble_sheet_algorithm(
@@ -229,6 +286,8 @@ def _run_ensemble_sheet_algorithm(
     min_reusable_size: float,
     cutting_mode: str,
     optimization_mode: str,
+    execution_mode: str = "processes",
+    progress_callback: ProgressCallback | None = None,
 ) -> OptimizationResult:
     """Run every sheet algorithm across CPU cores; return the best-scoring result.
 
@@ -242,7 +301,8 @@ def _run_ensemble_sheet_algorithm(
     return run_parallel_ensemble(
         stock, parts, kerf, margin, mode,
         min_reusable_size, cutting_mode, optimization_mode,
-        use_processes=True,
+        execution_mode=execution_mode,
+        progress_callback=progress_callback,
     )
 
 
@@ -262,7 +322,7 @@ def _missing_stock_for(effective_stock: list[SheetStock], missing_parts: list[Sh
         candidates = [
             item
             for item in effective_stock
-            if item.material == material and abs(item.thickness - thickness) < 0.001
+            if materials_are_compatible(item.material, material) and abs(item.thickness - thickness) < 0.001
         ]
         for item in candidates:
             signature = (
@@ -282,6 +342,169 @@ def _missing_stock_for(effective_stock: list[SheetStock], missing_parts: list[Sh
     return virtual_stock
 
 
+def _missing_part_key(part: SheetPart) -> tuple[object, ...]:
+    """Identity used when a real-sheet layout is repeated on virtual stock."""
+    return (
+        str(part.name),
+        round(float(part.width), 4),
+        round(float(part.height), 4),
+        str(part.material or "").strip().casefold(),
+        round(float(part.thickness), 4),
+        bool(part.allow_rotation),
+        str(part.grain_direction or ""),
+    )
+
+
+def _expanded_missing_instances(parts: list[SheetPart]) -> list[SheetPart]:
+    """Return one quantity-one record per required missing formatka."""
+    instances: list[SheetPart] = []
+    for part in parts:
+        quantity = max(0, int(round(float(part.quantity))))
+        instances.extend(replace(part, quantity=1) for _ in range(quantity))
+    return instances
+
+
+def _aggregate_part_instances(instances: list[SheetPart]) -> list[SheetPart]:
+    """Restore quantities after collecting one-record placement instances."""
+    prototypes: dict[tuple[object, ...], SheetPart] = {}
+    counts: dict[tuple[object, ...], int] = defaultdict(int)
+    for part in instances:
+        key = _missing_part_key(part)
+        prototypes.setdefault(key, part)
+        counts[key] += 1
+    return [replace(prototypes[key], quantity=count) for key, count in counts.items()]
+
+
+def _repack_sparse_real_board_with_missing_stock(
+    result: OptimizationResult,
+    algorithm: str,
+    effective_stock: list[SheetStock],
+    missing_parts: list[SheetPart],
+    kerf: float,
+    margin: float,
+    mode: str,
+    min_reusable_size: float,
+    cutting_mode: str,
+    optimization_mode: str,
+    execution_mode: str,
+    progress_callback: ProgressCallback | None,
+) -> OptimizationResult | None:
+    """Globally repack only when the real board is visibly under-filled."""
+    real_layouts = [layout for layout in result.sheet_layouts if layout.parts]
+    if not real_layouts or min(layout.utilization for layout in real_layouts) >= 75.0:
+        return None
+
+    required_instances = [
+        replace(placed.part, quantity=1)
+        for layout in real_layouts
+        for placed in layout.parts
+        if not getattr(placed.part, "is_waste_fill", False)
+    ]
+    required_instances.extend(_expanded_missing_instances(missing_parts))
+    if not required_instances:
+        return None
+    # A single-format order already has a stable canonical packing.  Repacking
+    # it globally can needlessly change that proven pattern without improving
+    # the production result.
+    if len({_missing_part_key(part) for part in required_instances}) < 2:
+        return None
+
+    required_parts = _aggregate_part_instances(required_instances)
+    virtual_stock = _missing_stock_for(effective_stock, required_instances)
+    if not virtual_stock:
+        return None
+
+    global_result = _run_sheet_algorithm(
+        algorithm,
+        list(effective_stock) + virtual_stock,
+        required_parts,
+        kerf,
+        margin,
+        mode,
+        min_reusable_size,
+        cutting_mode,
+        optimization_mode,
+        execution_mode=execution_mode,
+        progress_callback=progress_callback,
+    )
+    populated = [layout for layout in global_result.sheet_layouts if layout.parts]
+    if global_result.unplaced_sheet_parts or not populated:
+        return None
+    if min(layout.utilization for layout in populated) < 75.0:
+        return None
+
+    result.sheet_layouts = [
+        layout for layout in global_result.sheet_layouts
+        if getattr(layout.stock, "source", "stock") != "missing"
+    ]
+    result.missing_sheet_layouts = [
+        layout for layout in global_result.sheet_layouts
+        if getattr(layout.stock, "source", "stock") == "missing"
+    ]
+    for index, layout in enumerate(result.sheet_layouts + result.missing_sheet_layouts, start=1):
+        layout.sheet_index = index
+    result.unplaced_sheet_parts = []
+    result.messages.append("Rebalanced sparse real board with virtual stock.")
+    return result
+
+
+def _seed_missing_layouts_from_real_boards(
+    result: OptimizationResult,
+    missing_parts: list[SheetPart],
+) -> tuple[list, list[SheetPart]]:
+    """Reuse a proven real-board pattern before optimizing the final remainder.
+
+    The first stock board can contain a deliberately mixed-orientation pattern
+    that is more useful in production than a freshly optimized remainder.
+    Missing boards of the same specification should repeat that pattern whenever
+    the required formatki are still available.  This also makes the preview
+    consistent: a full virtual board looks and cuts like the full real board.
+    """
+    remaining = _expanded_missing_instances(missing_parts)
+    seeded_layouts: list = []
+
+    for template in result.sheet_layouts:
+        if not template.parts:
+            continue
+        # A sparse real board is not a production pattern worth cloning.  Let
+        # the full candidate ensemble improve it instead of reproducing its
+        # weakness on every additional board.
+        if template.utilization < 75.0:
+            continue
+        # Optional waste-fill parts do not belong to the BOM and must not turn
+        # into a requirement for duplicating an otherwise valid production card.
+        if any(getattr(placed.part, "is_waste_fill", False) for placed in template.parts):
+            continue
+
+        required: dict[tuple[object, ...], int] = defaultdict(int)
+        for placed in template.parts:
+            required[_missing_part_key(placed.part)] += 1
+
+        while required:
+            available: dict[tuple[object, ...], int] = defaultdict(int)
+            for part in remaining:
+                available[_missing_part_key(part)] += 1
+            if any(available[key] < count for key, count in required.items()):
+                break
+
+            clone = deepcopy(template)
+            clone.sheet_index = 0
+            clone.stock = replace(template.stock, quantity=1, price=0.0, source="missing")
+            seeded_layouts.append(clone)
+
+            to_consume = dict(required)
+            next_remaining: list[SheetPart] = []
+            for part in remaining:
+                key = _missing_part_key(part)
+                if to_consume.get(key, 0) > 0:
+                    to_consume[key] -= 1
+                else:
+                    next_remaining.append(part)
+            remaining = next_remaining
+
+    return seeded_layouts, remaining
+
+
 def _attach_missing_sheet_layouts(
     result: OptimizationResult,
     algorithm: str,
@@ -292,6 +515,8 @@ def _attach_missing_sheet_layouts(
     min_reusable_size: float,
     cutting_mode: str,
     optimization_mode: str,
+    execution_mode: str = "processes",
+    progress_callback: ProgressCallback | None = None,
 ) -> OptimizationResult:
     missing_parts = result.unplaced_sheet_parts
     base_messages = [message for message in result.messages if "could not be placed" not in message]
@@ -300,6 +525,23 @@ def _attach_missing_sheet_layouts(
         return result
 
     result.messages = base_messages
+
+    globally_repacked = _repack_sparse_real_board_with_missing_stock(
+        result,
+        algorithm,
+        effective_stock,
+        missing_parts,
+        kerf,
+        margin,
+        mode,
+        min_reusable_size,
+        cutting_mode,
+        optimization_mode,
+        execution_mode,
+        progress_callback,
+    )
+    if globally_repacked is not None:
+        return globally_repacked
 
     # Names of the truly-required unplaced parts — used to filter the
     # missing-run output and decide what counts as "still unplaced".
@@ -319,21 +561,30 @@ def _attach_missing_sheet_layouts(
             if _is_bonus_filler_for_missing_sheets(p, layout.stock):
                 bonus_filler_map[p.name] = replace(p, is_waste_fill=True)
 
+    seeded_layouts, remaining_missing_parts = _seed_missing_layouts_from_real_boards(
+        result,
+        missing_parts,
+    )
     bonus_fillers = list(bonus_filler_map.values())
-    all_parts_for_missing = list(missing_parts) + bonus_fillers
+    all_parts_for_missing = remaining_missing_parts + bonus_fillers
 
     missing_stock = _missing_stock_for(effective_stock, all_parts_for_missing)
-    missing_result = _run_sheet_algorithm(
-        algorithm, missing_stock, all_parts_for_missing,
-        kerf, margin, mode, min_reusable_size, cutting_mode, optimization_mode,
-    )
+    if all_parts_for_missing and missing_stock:
+        missing_result = _run_sheet_algorithm(
+            algorithm, missing_stock, all_parts_for_missing,
+            kerf, margin, mode, min_reusable_size, cutting_mode, optimization_mode,
+            execution_mode=execution_mode,
+            progress_callback=progress_callback,
+        )
+    else:
+        missing_result = OptimizationResult(job_type="sheet", algorithm=algorithm)
 
     # Sort missing sheets so the most-used (widest) appears first.  Users expect
     # the layout to fill sheets in order — a fuller sheet 2 followed by a
     # smaller sheet 3 reads as "packed greedily" even though the total material
     # is identical to any other ordering.
     sorted_missing = sorted(
-        missing_result.sheet_layouts,
+        seeded_layouts + missing_result.sheet_layouts,
         key=lambda lay: (-lay.used_width, -lay.used_height, -len(lay.parts)),
     )
     for offset, layout in enumerate(sorted_missing, start=1):
@@ -360,7 +611,7 @@ def _attach_missing_sheet_layouts(
     return result
 
 
-def optimize_sheet_project(project: Project) -> OptimizationResult:
+def optimize_sheet_project(project: Project, progress_callback: ProgressCallback | None = None) -> OptimizationResult:
     _validate_project_for_optimization(project)
     settings = project.settings
     effective_kerf = _effective_kerf(settings.kerf, getattr(settings, "kerf_tolerance", KERF_TOLERANCE_MM))
@@ -369,6 +620,8 @@ def optimize_sheet_project(project: Project) -> OptimizationResult:
         replace(part, allow_rotation=part.allow_rotation and settings.allow_rotation)
         for part in project.sheet_parts
     ]
+    execution_mode = "processes" if getattr(settings, "multi_core", True) else "sequential"
+    _report_progress(progress_callback, 2, "Przygotowuję dane rozkroju")
     result = _run_sheet_algorithm(
         settings.algorithm,
         effective_stock,
@@ -379,8 +632,11 @@ def optimize_sheet_project(project: Project) -> OptimizationResult:
         settings.min_reusable_offcut_size,
         settings.cutting_mode,
         settings.optimization_mode,
+        execution_mode=execution_mode,
+        progress_callback=_scaled_progress(progress_callback, 5, 84),
     )
-    return _attach_missing_sheet_layouts(
+    _report_progress(progress_callback, 86, "Sprawdzam brakujące płyty")
+    result = _attach_missing_sheet_layouts(
         result,
         settings.algorithm,
         effective_stock,
@@ -390,10 +646,16 @@ def optimize_sheet_project(project: Project) -> OptimizationResult:
         settings.min_reusable_offcut_size,
         settings.cutting_mode,
         settings.optimization_mode,
+        execution_mode=execution_mode,
+        progress_callback=_scaled_progress(progress_callback, 88, 98),
     )
+    _assert_result_sheet_compatibility(result)
+    result.saw_feed_m_per_min = max(1.0, float(getattr(settings, "saw_feed_m_per_min", 12.0) or 12.0))
+    _report_progress(progress_callback, 100, "Finalizuję wynik")
+    return result
 
 
-def optimize_sheet_order(projects: list[Project]) -> OptimizationResult:
+def optimize_sheet_order(projects: list[Project], progress_callback: ProgressCallback | None = None) -> OptimizationResult:
     """Optimize several independent board groups (different board types /
     thicknesses, each with its own formatki) and merge them into one result
     for a combined preview and whole-order quote.
@@ -406,22 +668,33 @@ def optimize_sheet_order(projects: list[Project]) -> OptimizationResult:
     if not groups:
         raise ValueError("Brak grup do policzenia.")
     if len(groups) == 1:
-        return optimize_sheet_project(groups[0])
+        return optimize_sheet_project(groups[0], progress_callback=progress_callback)
 
     merged = OptimizationResult(job_type="sheet", algorithm="order (multi-group)")
     sheet_no = 0
     for index, project in enumerate(groups, start=1):
         label = (project.meta.material or "").strip() or f"Grupa {index}"
-        sub = optimize_sheet_project(project)
+        start = 2 + round((index - 1) / len(groups) * 96)
+        end = 2 + round(index / len(groups) * 96)
+        _report_progress(progress_callback, start, f"Grupa {index}/{len(groups)}: przygotowanie")
+        sub = optimize_sheet_project(project, progress_callback=_scaled_progress(progress_callback, start, end))
+        group_sheet_no = 0
         for layout in list(sub.sheet_layouts) + list(sub.missing_sheet_layouts):
             sheet_no += 1
+            group_sheet_no += 1
             layout.sheet_index = sheet_no
+            setattr(layout, "display_sheet_index", group_sheet_no)
             setattr(layout, "group_label", label)
             setattr(layout, "group_index", index)
         merged.sheet_layouts.extend(sub.sheet_layouts)
         merged.missing_sheet_layouts.extend(sub.missing_sheet_layouts)
         merged.unplaced_sheet_parts.extend(sub.unplaced_sheet_parts)
         merged.messages.extend(sub.messages)
+    merged.saw_feed_m_per_min = max(
+        1.0,
+        float(getattr(groups[0].settings, "saw_feed_m_per_min", 12.0) or 12.0),
+    )
+    _report_progress(progress_callback, 100, "Wszystkie grupy są gotowe")
     return merged
 
 
@@ -453,6 +726,10 @@ class OptimizerWorker(QObject):
             else:
                 self.progress.emit(35, f"Liczenie płyt: {settings.algorithm}")
                 result = optimize_sheet_project(self.project)
+            result.saw_feed_m_per_min = max(
+                1.0,
+                float(getattr(settings, "saw_feed_m_per_min", 12.0) or 12.0),
+            )
             self.progress.emit(100, "Obliczenia zakończone")
             if not self._cancelled:
                 self.finished.emit(result)

@@ -149,7 +149,45 @@ def _reveal_in_explorer(path: str) -> None:
         pass
 
 
+
+def send_via_smtp(subject: str, body: str, attachment: str | None, config: dict) -> None:
+    import smtplib
+    from email.message import EmailMessage
+
+    msg = EmailMessage()
+    msg['Subject'] = subject
+    msg['From'] = config.get('user')
+    msg['To'] = config.get('to')
+    msg.set_content(body)
+
+    if attachment:
+        import mimetypes
+        path = Path(attachment)
+        ctype, encoding = mimetypes.guess_type(str(path))
+        if ctype is None or encoding is not None:
+            ctype = 'application/octet-stream'
+        maintype, subtype = ctype.split('/', 1)
+        with open(path, 'rb') as fp:
+            msg.add_attachment(fp.read(), maintype=maintype, subtype=subtype, filename=path.name)
+
+    host = config.get('host', '')
+    port = int(config.get('port', 465))
+    user = config.get('user', '')
+    password = config.get('password', '')
+    use_ssl = config.get('ssl', True)
+
+    if use_ssl:
+        with smtplib.SMTP_SSL(host, port) as server:
+            server.login(user, password)
+            server.send_message(msg)
+    else:
+        with smtplib.SMTP(host, port) as server:
+            server.starttls()
+            server.login(user, password)
+            server.send_message(msg)
+
 def compose_email(
+
     subject: str,
     body: str = "",
     attachment: str | None = None,

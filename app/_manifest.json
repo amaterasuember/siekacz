@@ -1,0 +1,7 @@
+{
+  "main.py": "2474968bae5d37d26983c2aaa52b2b803a87f82a7d3a2dca49fe90539a3e875e",
+  "app/integrity.py": "faf542386d0a99f92a223ca93037179a7ee70c5902dc2e370f7a709c7295583d",
+  "app/expiry.py": "5f82105eab9ac0f3513fc25650d01f79da56d526e36cb2994a7cfa44f5e5c781",
+  "app/license_text.py": "484ee6d20f5fe3f303d2d9e21319a21bde250b9658035a3af4b3c8664c7b9e2f",
+  "app/version.py": "9f7ab156228d184ab6a1d11e0da6aa38362edc20c47db1b3efe32dd46a4f3586"
+}
