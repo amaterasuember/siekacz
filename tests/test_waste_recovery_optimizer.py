@@ -188,7 +188,7 @@ def test_missing_layout_preview_uses_consumed_fragment_dimensions() -> None:
     layout.vertical_segments = [{"index": index + 1, "x": round(index * 45.2, 3), "width": 40, "right": round(index * 45.2 + 40, 3)} for index in range(7)]
 
     view = LayoutView()
-    display_w, display_h, rotated = view._display_sheet_geometry(layout, consumed_only=True)
+    display_w, display_h, rotated, _ = view._display_sheet_geometry(layout, consumed_only=True)
 
     assert not rotated
     assert round(display_w, 1) == round(layout.used_width, 1)

@@ -51,7 +51,7 @@ def generate() -> None:
         else:
             print(f"[integrity] WARN: nie znaleziono {rel}")
     _MANIFEST.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-    print(f"[integrity] Manifest zapisany → {_MANIFEST}")
+    print(f"[integrity] Manifest zapisany -> {_MANIFEST}")
     for rel, h in data.items():
         print(f"  {h[:12]}…  {rel}")
 

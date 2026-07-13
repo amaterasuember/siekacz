@@ -1,6 +1,6 @@
 #define MyAppName "SIEKACZ 9000"
 #define MyAppExeName "SIEKACZ9000.exe"
-#define MyAppVersion "2.0.0"
+#define MyAppVersion "3.1.1"
 #define MyAppPublisher "Kewin"
 
 [Setup]

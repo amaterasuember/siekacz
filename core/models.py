@@ -42,6 +42,20 @@ class SheetStock:
     nominal_width: float = 0.0
     nominal_height: float = 0.0
     sheet_allowance: float = 0.0
+    stack_size: int = 1
+
+
+def materials_are_compatible(stock_material: str, part_material: str) -> bool:
+    """Match named materials exactly, while treating an unassigned one as generic.
+
+    ``standard`` is the legacy internal value created for an empty UI field.
+    It has the same meaning as an unassigned material and must not block quick
+    thickness-only calculations.
+    """
+    stock_name = str(stock_material or "").strip().casefold()
+    part_name = str(part_material or "").strip().casefold()
+    generic_names = {"", "standard"}
+    return stock_name in generic_names or part_name in generic_names or stock_name == part_name
 
 
 @dataclass
@@ -205,6 +219,9 @@ class OptimizationSettings:
     allow_rotation: bool = True
     show_cut_order: bool = False
     allow_mixed_materials: bool = False
+    multi_core: bool = True
+    saw_feed_m_per_min: float = 12.0
+    animation_mode: str = "economy"
 
 
 @dataclass
@@ -227,6 +244,7 @@ class OptimizationResult:
     manufacturing_score: float = 0.0
     # T2-6: aggregated estimated cut time across all sheets, in seconds.
     total_estimated_cut_time_s: float = 0.0
+    saw_feed_m_per_min: float = 12.0
     messages: list[str] = field(default_factory=list)
 
 

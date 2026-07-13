@@ -38,7 +38,7 @@ def _simple_project() -> Project:
         notes="Test P4",
     )
     project.sheet_stock = [
-        SheetStock("standard", 1, 2000, 1000, 5, allow_rotation=True, min_offcut_width=80, min_offcut_height=80)
+        SheetStock("standard", 18, 2000, 1000, 5, allow_rotation=True, min_offcut_width=80, min_offcut_height=80)
     ]
     project.sheet_parts = [
         SheetPart("A", 300, 500, 3, "standard", 18, allow_rotation=True),

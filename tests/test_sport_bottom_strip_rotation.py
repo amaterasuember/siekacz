@@ -9,7 +9,7 @@ from algorithms.two_d_vertical_segmented import optimize_2d_vertical_segmented
 from core.models import SheetPart, SheetStock
 
 
-def test_comfort_and_sport_use_bottom_strip_for_rotated_long_parts() -> None:
+def test_comfort_and_sport_compact_rotated_long_parts_across_sheets() -> None:
     stock = [SheetStock("standard", 1, 2000, 1000, 2, allow_rotation=True)]
     parts = [SheetPart("50 x 900", 50, 900, 55, "standard", 1, allow_rotation=True)]
 
@@ -26,9 +26,12 @@ def test_comfort_and_sport_use_bottom_strip_for_rotated_long_parts() -> None:
         assert second_sheet.stock.width == 2000
         assert second_sheet.stock.height == 1000
         assert second_sheet.parts
-        assert second_sheet.used_width <= 1000
+        # The optimizer may choose a uniform second board instead of the old
+        # bottom-strip picture when it saves more material across both boards.
+        assert second_sheet.used_width <= 1050
         assert second_sheet.used_height <= 1000
         assert not any(part.rotated for part in second_sheet.parts)
+        assert sum(layout.used_width for layout in result.sheet_layouts) <= 2850
 
 
 def test_comfort_can_rotate_stock_orientation_when_it_reduces_sheet_count() -> None:
@@ -52,6 +55,6 @@ def test_comfort_can_rotate_stock_orientation_when_it_reduces_sheet_count() -> N
 
 
 if __name__ == "__main__":
-    test_comfort_and_sport_use_bottom_strip_for_rotated_long_parts()
+    test_comfort_and_sport_compact_rotated_long_parts_across_sheets()
     test_comfort_can_rotate_stock_orientation_when_it_reduces_sheet_count()
     print("comfort/sport bottom strip rotation test: OK")

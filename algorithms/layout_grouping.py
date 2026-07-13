@@ -19,6 +19,7 @@ class LayoutGroup:
     count: int
     indices: list[int]            # original positions of every member
     sheet_indices: list[int]      # SheetLayout.sheet_index of every member
+    display_sheet_indices: list[int]  # numbering within material/thickness group
 
 
 def layout_signature(layout: SheetLayout) -> tuple:
@@ -40,7 +41,14 @@ def layout_signature(layout: SheetLayout) -> tuple:
             for p in layout.parts
         )
     )
-    return (round(stock.width, 1), round(stock.height, 1), str(stock.material), parts)
+    return (
+        round(stock.width, 1),
+        round(stock.height, 1),
+        str(stock.material),
+        round(float(getattr(stock, "thickness", 0.0) or 0.0), 3),
+        max(1, int(getattr(stock, "stack_size", 1) or 1)),
+        parts,
+    )
 
 
 def group_identical_layouts(layouts: list[SheetLayout]) -> list[LayoutGroup]:
@@ -56,10 +64,12 @@ def group_identical_layouts(layouts: list[SheetLayout]) -> list[LayoutGroup]:
                 count=0,
                 indices=[],
                 sheet_indices=[],
+                display_sheet_indices=[],
             )
             by_sig[sig] = group
             groups.append(group)
         group.count += 1
         group.indices.append(index)
         group.sheet_indices.append(getattr(layout, "sheet_index", index + 1))
+        group.display_sheet_indices.append(getattr(layout, "display_sheet_index", index + 1))
     return groups

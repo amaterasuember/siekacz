@@ -2,18 +2,21 @@ from __future__ import annotations
 
 import math
 import random
+import sys
 from dataclasses import dataclass, field
+from pathlib import Path
 
-from PySide6.QtCore import QElapsedTimer, QPointF, QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import QElapsedTimer, QPointF, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QColor,
     QFont,
     QLinearGradient,
+    QMovie,
     QPainter,
     QPainterPath,
     QRadialGradient,
 )
-from PySide6.QtWidgets import QApplication, QPushButton, QWidget
+from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QWidget
 
 
 # ---------------------------------------------------------------------------
@@ -46,6 +49,11 @@ class OptimizationProgressAdapter:
 def _ease_out_quint(value: float) -> float:
     value = max(0.0, min(1.0, value))
     return 1.0 - pow(1.0 - value, 5)
+
+
+def _resource_path(relative_path: str) -> Path:
+    base_path = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[1]))
+    return base_path / relative_path
 
 
 # ---------------------------------------------------------------------------
@@ -208,6 +216,300 @@ _SIMS_MESSAGES: tuple[str, ...] = (
     "Tytan jest tak wytrzymały i lekki, że używa się go w implantach i rakietach.",
 )
 
+# A fresh, deliberately finite deck. The shuffle-bag shows every item once
+# before any repeat, so this is also an easy contract to cover in tests.
+_SIMS_MESSAGES = (
+    "Pierwsza piła tarczowa opisana drukiem była napędzana ręcznie i służyła do cięcia drewna.",
+    "Rzaz to materiał bezpowrotnie usunięty przez zęby piły, dlatego musi być częścią geometrii rozkroju.",
+    "Aluminium można przetapiać wielokrotnie bez utraty jego podstawowych właściwości.",
+    "Stal rozszerza się wraz z temperaturą, więc długie pomiary warsztatowe zależą od warunków otoczenia.",
+    "Suwmiarka z noniuszem pozwala odczytać ułamki milimetra bez elektroniki.",
+    "Mikrometr wykorzystuje precyzyjny gwint do zamiany obrotu na bardzo mały przesuw.",
+    "Cięcie gilotynowe dzieli prostokąt od jednej krawędzi do przeciwległej bez zatrzymywania linii w środku.",
+    "Duża prostokątna resztka jest zwykle cenniejsza od kilku skrawków o tej samej łącznej powierzchni.",
+    "W produkcji seryjnej kolejność cięć może oszczędzić więcej czasu niż niewielka poprawa wykorzystania materiału.",
+    "Twardość i odporność na pękanie to różne cechy materiału; bardzo twardy materiał może być kruchy.",
+    "Poliamid pochłania wilgoć z powietrza, co może wpływać na jego wymiary.",
+    "POM ma małe tarcie i dobrą stabilność wymiarową, dlatego często trafia do precyzyjnych elementów maszyn.",
+    "PE1000 ma bardzo dużą odporność na ścieranie i niski współczynnik tarcia.",
+    "Ślad narzędzia zależy nie tylko od posuwu, ale też od liczby zębów i prędkości obrotowej.",
+    "Za mały posuw może przegrzewać tworzywo zamiast poprawiać jakość krawędzi.",
+    "Ostry nóż skrawa z mniejszą siłą, ale nadal wymaga stabilnego prowadzenia materiału.",
+    "Jednostka megapaskal opisuje naprężenie równe milionowi niutonów na metr kwadratowy.",
+    "Moduł Younga mówi, jak mocno materiał odkształca się sprężyście pod obciążeniem.",
+    "Współczynnik tarcia nie ma jednostki, bo jest stosunkiem dwóch sił.",
+    "Fazowanie krawędzi usuwa ostry narożnik i ułatwia montaż części.",
+    "Grat to niepożądany materiał pozostający na krawędzi po cięciu lub wierceniu.",
+    "Tolerancja określa dopuszczalny zakres wymiaru, a nie pojedynczą idealną wartość.",
+    "Pasowanie otworu i wałka może być luźne, przejściowe albo ciasne.",
+    "Błąd systematyczny przesuwa wszystkie pomiary podobnie; powtarzanie pomiaru go nie usuwa.",
+    "Kalibracja porównuje przyrząd z wzorcem o znanej dokładności.",
+    "Ciepło podczas skrawania powstaje głównie przez odkształcanie materiału i tarcie.",
+    "Chłodziwo może jednocześnie odbierać ciepło, smarować i wypłukiwać wióry.",
+    "Wiór ciągły i wiór łamany wymagają innego prowadzenia oraz zabezpieczenia stanowiska.",
+    "Wyważenie obracającego się narzędzia ogranicza drgania i poprawia jakość powierzchni.",
+    "Rezonans pojawia się, gdy wymuszenie trafia blisko częstotliwości własnej układu.",
+    "Żebrowanie elementu może znacznie zwiększyć sztywność przy niewielkim wzroście masy.",
+    "Moment bezwładności przekroju silnie zależy od odsunięcia materiału od osi obojętnej.",
+    "Ta sama ilość materiału w profilu zamkniętym bywa sztywniejsza niż w pełnym pręcie.",
+    "Powierzchnia referencyjna powinna być ustalona przed kolejnymi operacjami pomiarowymi.",
+    "Łańcuch wymiarowy pokazuje, jak tolerancje wielu części sumują się w zespole.",
+    "Numer partii umożliwia powiązanie gotowego detalu z materiałem i parametrami procesu.",
+    "Kod QR może pomieścić dane dzięki korekcji błędów, nawet gdy fragment symbolu jest uszkodzony.",
+    "Metoda 5S porządkuje stanowisko pracy przez selekcję, systematykę, sprzątanie, standaryzację i samodyscyplinę.",
+    "Poka-yoke to rozwiązanie konstrukcyjne, które utrudnia albo uniemożliwia popełnienie błędu.",
+    "SMED skraca przezbrojenia przez przenoszenie czynności poza czas postoju maszyny.",
+    "Wąskie gardło wyznacza maksymalną przepustowość całego procesu.",
+    "Bufor przed wąskim gardłem chroni produkcję przed krótkimi zakłóceniami wcześniejszych operacji.",
+    "OEE łączy dostępność maszyny, jej wydajność i jakość wykonanych produktów.",
+    "Histogram pokazuje rozkład wyników, którego sama średnia nie potrafi ujawnić.",
+    "Mediana jest odporna na pojedyncze skrajne wyniki bardziej niż średnia arytmetyczna.",
+    "Algorytm zachłanny podejmuje najlepszą lokalną decyzję, ale nie zawsze znajduje najlepszy wynik globalny.",
+    "Optymalizacja wielokryterialna wymaga ustalenia, które cele są ważniejsze i w jakiej kolejności.",
+    "Przeszukiwanie równoległe pozwala oceniać niezależne warianty jednocześnie na wielu rdzeniach procesora.",
+    "Test regresyjny pilnuje, aby naprawiony wcześniej przypadek nie zepsuł się po kolejnej zmianie.",
+    "Powtarzalny wynik optymalizatora ułatwia porównywanie scoringu i diagnozowanie zmian algorytmu.",
+)
+
+# A world-facts deck rather than workshop hints.  The overlay walks this as a
+# shuffle bag, so each fact appears once before a new random cycle begins.
+_WORLD_FACTS: tuple[str, ...] = (
+    "Miód potrafi przetrwać tysiące lat, jeśli jest szczelnie przechowywany.",
+    "Woda może jednocześnie zamarzać i wrzeć w warunkach punktu potrójnego.",
+    "Najgłębszy znany punkt oceanów leży w Rowie Mariańskim.",
+    "Pustynia Sahara bywała w przeszłości zielonym, wilgotnym regionem.",
+    "Wenus obraca się tak wolno, że jej dzień trwa dłużej niż rok.",
+    "Światło ze Słońca dociera do Ziemi w około osiem minut i dwadzieścia sekund.",
+    "Księżyc oddala się od Ziemi o kilka centymetrów rocznie.",
+    "Antarktyda jest największą pustynią na Ziemi według sumy opadów.",
+    "Najdłuższą rzeką świata nazywa się zwykle Nil albo Amazonkę, zależnie od metody pomiaru.",
+    "Wielka Rafa Koralowa jest widoczna z orbity tylko w sprzyjających warunkach obserwacji.",
+    "Błyskawica może nagrzać powietrze do temperatury wyższej niż powierzchnia Słońca.",
+    "Dźwięk w wodzie rozchodzi się znacznie szybciej niż w powietrzu.",
+    "Największa góra Układu Słonecznego, Olympus Mons, znajduje się na Marsie.",
+    "Saturn ma tak małą średnią gęstość, że w dostatecznie wielkim oceanie mógłby pływać.",
+    "Jowisz ma burzę zwaną Wielką Czerwoną Plamą, obserwowaną od stuleci.",
+    "Na Merkurym jeden pełny dzień słoneczny trwa dwa merkuryjskie lata.",
+    "Ziemia nie jest idealną kulą, lecz jest lekko spłaszczona przy biegunach.",
+    "W atmosferze Ziemi najwięcej jest azotu, a nie tlenu.",
+    "Najstarsze znane drzewa rosną od tysięcy lat.",
+    "Wielki Mur Chiński nie jest wyraźnie widoczny gołym okiem z Księżyca.",
+    "Pierwsze mapy gwiazd powstawały tysiące lat przed wynalezieniem teleskopu.",
+    "Biblioteka Aleksandryjska była centrum badań, a nie pojedynczym regałem z księgami.",
+    "Papier wynaleziono w Chinach ponad dwa tysiące lat temu.",
+    "Druk z ruchomą czcionką rozwijał się w Azji przed europejskim drukiem Gutenberga.",
+    "Najstarsze znane malowidła jaskiniowe mają dziesiątki tysięcy lat.",
+    "Machu Picchu leży wysoko w Andach, ponad dwa kilometry nad poziomem morza.",
+    "Piramidy w Gizie były już starożytne dla Kleopatry.",
+    "Kanał Panamski łączy Ocean Atlantycki i Spokojny przez system śluz.",
+    "Pierwszy lot samolotem braci Wright trwał krócej niż minuta.",
+    "Pierwsze zdjęcie Ziemi z kosmosu wykonano w 1946 roku.",
+    "Międzynarodowa Stacja Kosmiczna okrąża Ziemię mniej więcej co dziewięćdziesiąt minut.",
+    "Na pokładzie stacji kosmicznej wschód Słońca można obserwować wielokrotnie w ciągu doby.",
+    "Czerwona barwa zachodu Słońca wynika z rozpraszania światła w atmosferze.",
+    "Tęcza jest pełnym okręgiem, choć z ziemi zwykle widzimy tylko jej łuk.",
+    "Śnieg może skrzypieć pod butami, gdy kryształki lodu pękają na mrozie.",
+    "Nie wszystkie jeziora są słodkowodne; wiele z nich ma bardzo wysokie zasolenie.",
+    "Morze Martwe jest jeziorem, mimo że jego nazwa sugeruje morze.",
+    "Najwyższy wodospad świata, Salto Ángel, leży w Wenezueli.",
+    "Jezioro Bajkał zawiera największą objętość ciekłej słodkiej wody powierzchniowej.",
+    "Islandia leży na styku płyt tektonicznych i ma liczne źródła geotermalne.",
+    "Himalaje nadal powoli rosną, ponieważ zderzają się tam płyty kontynentalne.",
+    "Trzęsienia ziemi mierzy się dziś momentem sejsmicznym, nie wyłącznie skalą Richtera.",
+    "Wulkaniczne gleby są często bardzo żyzne dzięki minerałom z popiołu.",
+    "Największa część świeżej wody na Ziemi jest uwięziona w lodzie i pod ziemią.",
+    "Prądy oceaniczne rozprowadzają ciepło między strefami klimatycznymi.",
+    "El Niño zmienia temperaturę wód Pacyfiku i wpływa na pogodę w wielu krajach.",
+    "Północ magnetyczna nie leży dokładnie w tym samym miejscu co biegun geograficzny.",
+    "Kompas wskazuje kierunek pola magnetycznego, a nie automatycznie prawdziwą północ.",
+    "Najkrótsza droga między dwoma punktami na globusie zwykle wygląda na mapie jak łuk.",
+    "Strefy czasowe są decyzją administracyjną, dlatego nie zawsze biegną idealnie wzdłuż południków.",
+    "Na Ziemi istnieją miejsca, w których można przejść przez więcej niż jedną strefę czasową w kilka minut.",
+    "Język baskijski nie jest blisko spokrewniony z większością języków Europy.",
+    "Alfabet łaciński wywodzi się pośrednio z alfabetu fenickiego.",
+    "Najczęściej używanym językiem ojczystym na świecie jest mandaryński.",
+    "Braille pozwala odczytywać tekst dotykiem dzięki układom sześciu punktów.",
+    "Kod Morse'a zapisuje znaki jako sekwencje krótkich i długich sygnałów.",
+    "Pierwszy e-mail wysłano w 1971 roku.",
+    "Internet i World Wide Web to nie to samo: sieć WWW jest jedną z usług internetu.",
+    "GPS wymaga poprawek relatywistycznych, aby zachować dokładność pozycjonowania.",
+    "Satelity nawigacyjne przesyłają bardzo precyzyjne informacje o czasie.",
+    "Pierwsze zdjęcia cyfrowe zapisywano długo przed pojawieniem się smartfonów.",
+    "Liczba pi ma nieskończone i nieokresowe rozwinięcie dziesiętne.",
+    "Zero jako liczba i symbol było jednym z przełomów w historii matematyki.",
+    "System metryczny opiera się na jednostkach powiązanych potęgami dziesięciu.",
+    "Kilogram był przez lata definiowany przez fizyczny wzorzec przechowywany pod Paryżem.",
+    "Sekunda jest obecnie definiowana przez właściwość atomu cezu.",
+    "W próżni wszystkie ciała spadają z takim samym przyspieszeniem, gdy pomija się opór.",
+    "Promienie światła mogą zakrzywiać się w pobliżu bardzo masywnych obiektów.",
+    "Czarne dziury nie zasysają wszystkiego z daleka; ich grawitacja działa jak każda inna przy tej samej masie.",
+    "Galaktyka Andromedy zbliża się do Drogi Mlecznej.",
+    "Droga Mleczna zawiera setki miliardów gwiazd.",
+    "Widzialna część wszechświata ma granicę wynikającą z czasu podróży światła.",
+    "Atom jest w większości pustą przestrzenią między jądrem a elektronami.",
+    "Złoto jest tak kowalne, że z jednego grama można zrobić bardzo cienki arkusz.",
+    "Diament i grafit składają się z węgla, ale mają inną strukturę atomową.",
+    "Lód unosi się na wodzie, ponieważ ma mniejszą gęstość niż ciekła woda.",
+    "Gorące źródła mogą istnieć pod lodem dzięki energii geotermalnej.",
+    "Największe złoża soli powstały po odparowaniu dawnych mórz.",
+    "Aurora powstaje, gdy cząstki ze Słońca oddziałują z ziemską atmosferą.",
+    "Zaćmienie Słońca jest możliwe dlatego, że Księżyc i Słońce mają podobny pozorny rozmiar na niebie.",
+    "Zaćmienie Księżyca może być widoczne z całej nocnej półkuli Ziemi.",
+    "Rok przestępny pomaga utrzymać kalendarz w zgodzie z ruchem Ziemi wokół Słońca.",
+    "Kalendarz gregoriański pomija część lat setnych jako przestępnych.",
+    "Najstarsze działające uniwersytety mają korzenie sięgające średniowiecza.",
+    "Oksford był ośrodkiem nauki zanim powstało Imperium Azteków.",
+    "Pierwsze nowoczesne igrzyska olimpijskie odbyły się w Atenach w 1896 roku.",
+    "Metro w Londynie było pierwszą podziemną koleją miejską na świecie.",
+    "Wieża Eiffla miała być początkowo konstrukcją tymczasową.",
+    "Opera w Sydney korzysta z dachów złożonych z fragmentów kuli.",
+    "Most Golden Gate zawdzięcza kolor widoczności we mgle, nie złotu.",
+    "Miasto Stambuł leży jednocześnie w Europie i Azji.",
+    "Równik przebiega przez trzynaście państw.",
+    "Największy kraj świata rozciąga się przez jedenaście stref czasowych.",
+    "Nepal używa czasu przesuniętego o czterdzieści pięć minut względem UTC.",
+    "W Japonii istnieje ponad sześć tysięcy wysp.",
+    "Nowa Zelandia była jednym z ostatnich dużych obszarów zasiedlonych przez ludzi.",
+    "Madagaskar oddzielił się od innych lądów miliony lat temu.",
+    "Amazonia wytwarza własną wilgoć dzięki intensywnemu obiegowi wody.",
+    "Lasy namorzynowe chronią wybrzeża przed falami i erozją.",
+    "Torfowiska magazynują dużo węgla w wilgotnej glebie.",
+    "Jedna cząsteczka wody może krążyć między oceanem, chmurą i lodem przez bardzo długi czas.",
+    "Część piasku na plażach powstaje z rozdrobnionych skał przynoszonych przez rzeki.",
+    "Fale tsunami na otwartym oceanie mogą być niskie, ale bardzo szybkie.",
+    "Najwyższe pływy występują tam, gdzie kształt zatoki wzmacnia ruch wody.",
+    "Deszcz meteorytów następuje, gdy Ziemia przechodzi przez ślad pyłu pozostawiony przez kometę.",
+    "Komety tworzą warkocz skierowany od Słońca, niezależnie od kierunku ich lotu.",
+)
+
+# Keep the visible deck at an even one hundred facts.  The surplus at the end
+# is intentional editorial reserve for future rotations without weakening the
+# no-repeat contract of the active deck.
+_SIMS_MESSAGES = _WORLD_FACTS[:100]
+
+_SAMURAI_FRAMES: tuple[tuple[str, str], ...] = (
+    ("01  IDLE STANCE", r"""
+                           .-^-.
+                        .-'  _  '-.
+                       /   .' '.   \
+                      /   / .-. \   \
+                     |   | (o o) |   |
+                     |   |  /_\  |   |
+                     |   | /===\ |   |
+                    /|    \|===|/    |\
+                 .-' |  .--/| |\--.  | '-.
+               .'    | /   / | | \   \ |    '.
+              /______|/___/  | |  \___\|______\
+                     /  _/___| |___\_  \
+                    /__/      | |     \__\
+                   /  /      _| |_      \  \
+                  /__/______/_____|______\__\
+_________________/____/_____/     \_____\____\_________________"""),
+    ("02  PREPARE", r"""
+                                      /|
+                           .-^-.     / |
+                        .-'  _  '-. /  |
+                       /   .' '.   /   |
+                      /   / .-. \ /    |
+                     |   | (o o) |     |
+                     |   |  /_\  |     |
+                     |   | /===\ |    / 
+                    /|    \|===|/    /|
+                 .-' |  .--/| |\--. / | '-.
+               .'    | /   / | | \  /  |    '.
+              /______|/___/  | |  \/___|______\
+                     /  _/___| |___\_  \
+                    /__/      | |     \__\
+                   /  /      _| |_      \  \
+__________________/__/______/_____|______\__\_________________"""),
+    ("03  SWING START", r"""
+              .  .  .  .  .  .  .  .  .  .
+                           .-^-.
+                        .-'  _  '-.              /|
+                       /   .' '.   \            / |
+                      /   / .-. \   \          /  |
+                     |   | (o o) |   |        /   |
+                     |   |  /_\  |   |       /    |
+                     |   | /===\ |   |      /     |
+                    /|    \|===|/    |\    /      |
+                 .-' |  .--/| |\--.  | '-.       |
+               .'    | /   / | | \   \ |    '.    |
+              /______|/___/  | |  \___\|______\___|
+                     /  _/___| |___\_  \
+                    /__/      | |     \__\
+___________________/__/______/_____|______\__\________________"""),
+    ("04  FAST SLASH", r"""
+                              ________________________________
+                     ________/================================\=======>
+              ----  ----  ----  ----  ----  ----  ----  ----
+                           .-^-.
+                        .-'  _  '-.
+                       /   .' '.   \________________
+                      /   / .-. \                    \
+                     |   | (o o) |____________________\
+                     |   |  /_\  |                     /
+                     |   | /===\ |                    /
+                    /|    \|===|/    |\              /
+                 .-' |  .--/| |\--.  | '-.          /
+_______________/_____|/___/_|_|_\___\|______\_______/_________"""),
+    ("05  IMPACT", r"""
+              =======================================================>
+        ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+                           .-^-.                         . * .
+                        .-'  _  '-.                  . *  |  * .
+                       /   .' '.   \                * ----+---- *
+                      /   / .-. \   \                 . *  |  * .
+                     |   | (o o) |   |                    . * .
+                     |   |  /_\  |___|_________________
+                     |   | /===\ |                    \
+                    /|    \|===|/    |\                \
+                 .-' |  .--/| |\--.  | '-.              \
+_______________/_____|/___/_|_|_\___\|______\____________\______"""),
+    ("06  FOLLOW THROUGH", r"""
+             .  .  .  .  .  .  .  .  .  .  .  .  .
+                           .-^-.
+                        .-'  _  '-.
+                       /   .' '.   \                       __
+                      /   / .-. \   \                ______/ /
+                     |   | (o o) |   |          ____/       /
+                     |   |  /_\  |___|______ __/           /
+                     |   | /===\ |       /  /             /
+                    /|    \|===|/    |\ /  /             /
+                 .-' |  .--/| |\--.  | '-/______________/
+               .'    | /   / | | \   \ |    '.
+______________/______|/___/__|_|__\___\|______\________________"""),
+    ("07  SPARK TRAIL", r"""
+                           .-^-.
+                        .-'  _  '-.                 .  *  .
+                       /   .' '.   \            *     . .     *
+                      /   / .-. \   \        .    *  /|\  *    .
+                     |   | (o o) |   |           .  / | \  .
+                     |   |  /_\  |   |       *     /  |  \     *
+                     |   | /===\ |   |           /___|___\
+                    /|    \|===|/    |\       .     |     .
+                 .-' |  .--/| |\--.  | '-.          | 
+               .'    | /   / | | \   \ |    '.
+              /______|/___/  | |  \___\|______\
+_____________/______/_____/___|_|___\_____\____\_______________"""),
+    ("08  RETURN TO IDLE", r"""
+                           .-^-.
+                        .-'  _  '-.
+                       /   .' '.   \
+                      /   / .-. \   \
+                     |   | (o o) |   |
+                     |   |  /_\  |   |
+                     |   | /===\ |   |
+                    /|    \|===|/    |\
+                 .-' |  .--/| |\--.  | '-.
+               .'    | /   / | | \   \ |    '.
+              /______|/___/  | |  \___\|______\
+                     /  _/___| |___\_  \
+                    /__/      | |     \__\
+                   /  /      _| |_      \  \
+                  /__/______/_____|______\__\
+_________________/____/_____/     \_____\____\_________________"""),
+)
+
 
 # ---------------------------------------------------------------------------
 # New Sims-style animation overlay
@@ -217,7 +519,7 @@ class OptimizationProgressOverlay(QWidget):
     """Animated loading overlay shown during optimization.
 
     Features:
-    - Indeterminate progress bar that sweeps back and forth
+    - Progress bar fed by actual optimizer phases
     - Cycling Sims-style funny descriptions (Polish)
     - Subtle pulsing background
     - Keeps a real elapsed-time counter visible
@@ -240,6 +542,17 @@ class OptimizationProgressOverlay(QWidget):
         self._timer = QTimer(self)
         self._timer.setInterval(16)  # ~60 fps
         self._timer.timeout.connect(self._tick)
+
+        self._samurai_movie_label = QLabel(self)
+        self._samurai_movie_label.setObjectName("samuraiCalculationRender")
+        self._samurai_movie_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._samurai_movie_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self._samurai_movie = QMovie(str(_resource_path("assets/animations/samurai_loader.gif")), b"gif", self)
+        self._samurai_movie.setCacheMode(QMovie.CacheMode.CacheAll)
+        self._samurai_movie_label.setMovie(self._samurai_movie)
+        self._samurai_movie_available = self._samurai_movie.isValid()
+        self._samurai_movie_label.setVisible(False)
+        self._animation_mode = "economy"
 
         # Message cycling
         self._messages = list(_SIMS_MESSAGES)
@@ -293,42 +606,80 @@ class OptimizationProgressOverlay(QWidget):
         bw = max(120, self._cancel_button.sizeHint().width() + 24)
         bh = max(28, self._cancel_button.sizeHint().height() + 6)
         bx = int(self.width() / 2 - bw / 2)
-        by = int(self.height() * 0.78)
+        by = int(self.height() * 0.84)
         self._cancel_button.setGeometry(bx, by, bw, bh)
         self._cancel_button.raise_()
+
+    def _reposition_samurai_movie(self) -> None:
+        if not self._samurai_movie_available or self._animation_mode != "quality":
+            return
+        target_w = min(600, max(320, int(self.width() * 0.58)))
+        target_h = int(target_w * 400 / 640)
+        x = int((self.width() - target_w) / 2)
+        y = max(24, int(self.height() * 0.08))
+        self._samurai_movie_label.setGeometry(x, y, target_w, target_h)
+        self._samurai_movie.setScaledSize(QSize(target_w, target_h))
+        self._samurai_movie_label.raise_()
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
         self._reposition_cancel()
+        self._reposition_samurai_movie()
 
     def showEvent(self, event) -> None:  # noqa: N802
         super().showEvent(event)
         self._reposition_cancel()
+        self._reposition_samurai_movie()
 
     # ------------------------------------------------------------------
     def start(self, project: object | None = None, duration_ms: int = 1100) -> None:
         self._elapsed.restart()
         self._msg_elapsed_s = 0.0
         self._msg_phase = 0.0
+        self.state.currentStageLabel = "Uruchamiam proces obliczania"
         # Continue through the persistent shuffle-bag instead of reshuffling and
         # restarting at index 0 every run.  Because a typical optimization lasts
         # only a few seconds, the user mostly sees the *first* message of each
         # run; advancing the deck here guarantees a fresh fact every time and no
         # repeats until the whole deck has been shown.
         self._advance_message()
+        requested_animation = getattr(getattr(project, "settings", None), "animation_mode", self._animation_mode)
+        self._animation_mode = "economy" if requested_animation == "economy" else "quality"
+        if project and not getattr(project.settings, "multi_core", True):
+            self._msg_label = "Uwaga: Wielowątkowość jest wyłączona. Proces obliczania się wydłuży."
+            # Set the phase slightly forward so it holds longer before fading out
+            self._msg_phase = 0.0
+        
         self.state.visible = True
         self.state.globalProgressPercent = 0
         self._cancel_button.setDisabled(False)
         self._cancel_button.setText("Anuluj")
         self._cancel_button.show()
+        if self._animation_mode == "quality" and self._samurai_movie_available:
+            self._reposition_samurai_movie()
+            self._samurai_movie_label.show()
+            self._samurai_movie.start()
+        else:
+            self._samurai_movie.stop()
+            self._samurai_movie_label.hide()
         self.show()
         self.raise_()
         self._reposition_cancel()
         self._timer.start()
         self.update()
 
+    def set_progress(self, percent: int, label: str = "") -> None:
+        """Receive a real phase update from the calculation process."""
+        bounded = max(0, min(100, int(percent)))
+        self.state.globalProgressPercent = max(self.state.globalProgressPercent, bounded)
+        if label:
+            self.state.currentStageLabel = label
+        self.update()
+
     def stop(self) -> None:
         self._timer.stop()
+        self._samurai_movie.stop()
+        self._samurai_movie_label.hide()
         self.state.visible = False
         self._cancel_button.hide()
         self.hide()
@@ -336,6 +687,8 @@ class OptimizationProgressOverlay(QWidget):
 
     def finish(self, delay_ms: int = 320) -> None:
         self._timer.stop()
+        self._samurai_movie.stop()
+        self._samurai_movie_label.hide()
         self.state.currentStageLabel = "Gotowe!"
         self.state.globalProgressPercent = 100
         self._cancel_button.hide()
@@ -368,9 +721,6 @@ class OptimizationProgressOverlay(QWidget):
         elapsed_s = elapsed_ms / 1000.0
 
         # Indeterminate bar: cycles 0→1 in ~2.4 s
-        cycle_s = 2.4
-        bar_t = (elapsed_s % cycle_s) / cycle_s
-        self.state.globalProgressPercent = int(_ease_out_quint(bar_t) * 100)
 
         # Cycle messages
         self._msg_elapsed_s += 0.016  # ~16 ms per tick
@@ -392,6 +742,318 @@ class OptimizationProgressOverlay(QWidget):
         if p > 0.88:
             return (1.0 - p) / 0.12
         return 1.0
+
+    def _paint_economy_loader(self, painter: QPainter, bounds: QRectF, elapsed_s: float, fade_in: float, is_light: bool) -> None:
+        """A restrained Windows-style boot loader made from orbiting dots."""
+        center = QPointF(bounds.center().x(), bounds.height() * 0.36)
+        orbit = max(34.0, min(bounds.width(), bounds.height()) * 0.078)
+        linear_cycle = (elapsed_s * 0.58) % 1.0
+        blue = QColor(99, 177, 255) if is_light else QColor(103, 190, 255)
+
+        # Five dots follow the same circle with a delayed, accelerating tail.
+        # The stagger is what gives the familiar Windows boot rhythm.
+        for index in range(5):
+            raw_position = (linear_cycle - index * 0.14) % 1.0
+            # Apply the wave after each dot's delay. This expands the gaps at
+            # the fast front and compresses the slower tail behind it.
+            position = (raw_position - 0.06 * math.sin(raw_position * math.tau)) % 1.0
+            angle = -math.pi / 2 + position * math.tau
+            ease = _ease_out_quint(position)
+            velocity = (1.0 - math.cos(raw_position * math.tau)) / 2.0
+            fast = max(0.0, min(1.0, (velocity - 0.58) / 0.42))
+            fast = fast * fast * (3.0 - 2.0 * fast)
+            wave = 0.5 + 0.5 * math.sin(position * math.tau - 0.7)
+            x = center.x() + math.cos(angle) * orbit
+            y = center.y() + math.sin(angle) * orbit
+            radius = 3.1 + ease * 1.45 + wave * 0.35
+            stretch = 1.0 + fast * 0.72
+            thickness = 1.0 - fast * 0.18
+            alpha = int(230 * fade_in)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(blue.red(), blue.green(), blue.blue(), alpha))
+            painter.save()
+            painter.translate(x, y)
+            painter.rotate(math.degrees(angle + math.pi / 2.0))
+            painter.drawEllipse(QRectF(-radius * stretch, -radius * thickness, radius * stretch * 2.0, radius * thickness * 2.0))
+            painter.restore()
+
+    def _paint_economy_loader_metaball_legacy(self, painter: QPainter, bounds: QRectF, elapsed_s: float, fade_in: float, is_light: bool) -> None:
+        """Two glowing metaball pairs with a slow, liquid bloom loop."""
+        if not self._metaball_bloom.isNull():
+            source = QRectF(
+                self._metaball_bloom.width() * 0.14,
+                self._metaball_bloom.height() * 0.10,
+                self._metaball_bloom.width() * 0.72,
+                self._metaball_bloom.height() * 0.72,
+            )
+            target_size = min(bounds.width() * 0.47, bounds.height() * 0.56)
+            breath = 1.0 + 0.025 * math.sin(elapsed_s * math.tau / 4.8)
+            rotation = 2.2 * math.sin(elapsed_s * math.tau / 8.0)
+            center = QPointF(bounds.center().x(), bounds.height() * 0.34)
+            painter.save()
+            painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Screen)
+            painter.setOpacity((0.96 if not is_light else 0.78) * fade_in)
+            painter.translate(center)
+            painter.rotate(rotation)
+            draw_size = target_size * breath
+            target = QRectF(-draw_size / 2.0, -draw_size / 2.0, draw_size, draw_size)
+            painter.drawPixmap(target, self._metaball_bloom, source)
+            painter.setOpacity((0.42 if not is_light else 0.24) * fade_in)
+            bloom_target = target.adjusted(-3.0, -3.0, 3.0, 3.0)
+            painter.drawPixmap(bloom_target, self._metaball_bloom, source)
+            painter.restore()
+            return
+
+        scene = QRectF(
+            bounds.center().x() - min(bounds.width(), bounds.height()) * 0.27,
+            bounds.height() * 0.12,
+            min(bounds.width(), bounds.height()) * 0.54,
+            min(bounds.width(), bounds.height()) * 0.46,
+        )
+        center = scene.center()
+        radius = max(36.0, scene.width() * 0.115)
+        phase = elapsed_s * 0.58
+
+        cyan = QColor(50, 217, 255) if not is_light else QColor(24, 132, 222)
+        violet = QColor(141, 92, 255) if not is_light else QColor(99, 76, 218)
+
+        def blob_path_legacy(first: QPointF, second: QPointF, first_radius: float, second_radius: float) -> QPainterPath:
+            dx = second.x() - first.x()
+            dy = second.y() - first.y()
+            distance = max(1.0, math.hypot(dx, dy))
+            vx, vy = dx / distance, dy / distance
+            nx, ny = -vy, vx
+            path = QPainterPath()
+            path.moveTo(first.x() + nx * first_radius, first.y() + ny * first_radius)
+            path.cubicTo(
+                first.x() + vx * distance * 0.42 + nx * first_radius * 0.72,
+                first.y() + vy * distance * 0.42 + ny * first_radius * 0.72,
+                second.x() - vx * distance * 0.42 + nx * second_radius * 0.72,
+                second.y() - vy * distance * 0.42 + ny * second_radius * 0.72,
+                second.x() + nx * second_radius,
+                second.y() + ny * second_radius,
+            )
+            path.cubicTo(
+                second.x() + vx * second_radius * 0.92 + nx * second_radius * 0.34,
+                second.y() + vy * second_radius * 0.92 + ny * second_radius * 0.34,
+                second.x() + vx * second_radius * 0.92 - nx * second_radius * 0.34,
+                second.y() + vy * second_radius * 0.92 - ny * second_radius * 0.34,
+                second.x() - nx * second_radius,
+                second.y() - ny * second_radius,
+            )
+            path.cubicTo(
+                second.x() - vx * distance * 0.42 - nx * second_radius * 0.72,
+                second.y() - vy * distance * 0.42 - ny * second_radius * 0.72,
+                first.x() + vx * distance * 0.42 - nx * first_radius * 0.72,
+                first.y() + vy * distance * 0.42 - ny * first_radius * 0.72,
+                first.x() - nx * first_radius,
+                first.y() - ny * first_radius,
+            )
+            path.cubicTo(
+                first.x() - vx * first_radius * 0.92 - nx * first_radius * 0.34,
+                first.y() - vy * first_radius * 0.92 - ny * first_radius * 0.34,
+                first.x() - vx * first_radius * 0.92 + nx * first_radius * 0.34,
+                first.y() - vy * first_radius * 0.92 + ny * first_radius * 0.34,
+                first.x() + nx * first_radius,
+                first.y() + ny * first_radius,
+            )
+            return path
+
+        def blob_path(first: QPointF, second: QPointF, first_radius: float, second_radius: float) -> QPainterPath:
+            """Union two rounded lobes and a narrow bridge into one smooth silhouette."""
+            dx = second.x() - first.x()
+            dy = second.y() - first.y()
+            distance = max(1.0, math.hypot(dx, dy))
+            nx, ny = -dy / distance, dx / distance
+            neck = min(first_radius, second_radius) * 0.72
+            bridge = QPainterPath()
+            bridge.moveTo(first.x() + nx * neck, first.y() + ny * neck)
+            bridge.lineTo(second.x() + nx * neck, second.y() + ny * neck)
+            bridge.lineTo(second.x() - nx * neck, second.y() - ny * neck)
+            bridge.lineTo(first.x() - nx * neck, first.y() - ny * neck)
+            bridge.closeSubpath()
+            lobes = QPainterPath()
+            lobes.addEllipse(first, first_radius, first_radius)
+            lobes.addEllipse(second, second_radius, second_radius)
+            return lobes.united(bridge).simplified()
+
+        def draw_pair(pair_phase: float, pair_scale: float, offset_x: float, offset_y: float, reverse: bool) -> None:
+            angle = pair_phase + (math.pi if reverse else 0.0)
+            wobble = math.sin(elapsed_s * 1.3 + pair_phase) * radius * 0.18
+            pair_center = QPointF(
+                center.x() + offset_x + math.cos(angle) * radius * 0.10,
+                center.y() + offset_y + math.sin(angle * 1.2) * radius * 0.08,
+            )
+            direction = angle + (0.92 if reverse else -0.92)
+            separation = radius * (1.30 + 0.10 * math.sin(elapsed_s * 1.05 + pair_phase))
+            first = QPointF(
+                pair_center.x() - math.cos(direction) * separation * 0.5,
+                pair_center.y() - math.sin(direction) * separation * 0.5 + wobble,
+            )
+            second = QPointF(
+                pair_center.x() + math.cos(direction) * separation * 0.5,
+                pair_center.y() + math.sin(direction) * separation * 0.5 - wobble,
+            )
+            first_radius = radius * pair_scale * (0.95 + 0.10 * math.sin(elapsed_s * 1.16 + pair_phase))
+            second_radius = radius * pair_scale * (1.02 + 0.10 * math.cos(elapsed_s * 0.97 + pair_phase))
+            path = blob_path(first, second, first_radius, second_radius)
+
+            glow = QRadialGradient(pair_center, radius * 3.2)
+            glow.setColorAt(0.0, QColor(cyan.red(), cyan.green(), cyan.blue(), int(74 * fade_in)))
+            glow.setColorAt(0.56, QColor(violet.red(), violet.green(), violet.blue(), int(24 * fade_in)))
+            glow.setColorAt(1.0, QColor(0, 0, 0, 0))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(glow)
+            painter.drawEllipse(pair_center, radius * 3.0, radius * 3.0)
+
+            gradient = QLinearGradient(first, second)
+            gradient.setColorAt(0.0, QColor(violet.red(), violet.green(), violet.blue(), int(238 * fade_in)))
+            gradient.setColorAt(0.42, QColor(111, 143, 255, int(250 * fade_in)))
+            gradient.setColorAt(1.0, QColor(cyan.red(), cyan.green(), cyan.blue(), int(240 * fade_in)))
+            painter.setBrush(gradient)
+            painter.setPen(QColor(194, 244, 255, int(180 * fade_in)))
+            painter.drawPath(path)
+
+            highlight = QRadialGradient(second, second_radius * 1.10)
+            highlight.setColorAt(0.0, QColor(255, 255, 255, int(105 * fade_in)))
+            highlight.setColorAt(1.0, QColor(255, 255, 255, 0))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(highlight)
+            painter.drawEllipse(second, second_radius * 1.10, second_radius * 1.10)
+
+        draw_pair(phase, 0.96, -scene.width() * 0.12, -scene.height() * 0.16, False)
+        draw_pair(phase + 1.62, 0.92, scene.width() * 0.12, scene.height() * 0.16, True)
+
+    def _paint_economy_loader_constellation(self, painter: QPainter, bounds: QRectF, elapsed_s: float, fade_in: float, is_light: bool) -> None:
+        """A light, looping field of luminous nodes that merge and split."""
+        center = QPointF(bounds.center().x(), bounds.height() * 0.36)
+        orbit = max(112.0, min(bounds.width(), bounds.height()) * 0.26)
+        palette = (
+            QColor(68, 190, 255), QColor(72, 232, 190), QColor(178, 114, 255),
+            QColor(203, 244, 112), QColor(255, 108, 212), QColor(82, 126, 255),
+        )
+        if is_light:
+            palette = tuple(
+                QColor(int(color.red() * 0.70), int(color.green() * 0.70), int(color.blue() * 0.78))
+                for color in palette
+            )
+
+        loop = (elapsed_s % 6.4) / 6.4
+        collision = math.exp(-((loop - 0.50) / 0.085) ** 2)
+
+        # Soft Bezier trails keep the field organic while remaining cheap to draw.
+        for index, color in enumerate(palette):
+            phase = index * math.tau / len(palette) + elapsed_s * (0.22 + (index % 2) * 0.025)
+            path = QPainterPath()
+            path.moveTo(
+                center.x() + math.cos(phase) * orbit * 0.86,
+                center.y() + math.sin(phase * 1.32) * orbit * 0.56,
+            )
+            path.cubicTo(
+                center.x() + math.sin(phase + 0.7) * orbit * 0.26,
+                center.y() - math.cos(phase * 1.1) * orbit * 0.92,
+                center.x() - math.cos(phase * 0.8) * orbit * 0.78,
+                center.y() + math.sin(phase + 1.4) * orbit * 0.76,
+                center.x() + math.cos(phase + 2.3) * orbit * 0.88,
+                center.y() + math.sin(phase * 1.26 + 1.2) * orbit * 0.56,
+            )
+            painter.setPen(QColor(color.red(), color.green(), color.blue(), int(44 * fade_in)))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawPath(path)
+
+        positions: list[QPointF] = []
+        for index in range(6):
+            speed = 0.47 if index == 0 else 0.72 + index * 0.022
+            phase = elapsed_s * speed + index * math.tau / 6.0
+            positions.append(QPointF(
+                center.x() + math.cos(phase) * orbit * (0.76 + 0.10 * math.sin(phase * 1.7)),
+                center.y() + math.sin(phase * 1.27) * orbit * 0.62,
+            ))
+
+        # Two focal points meet in the middle, grow into a flare, then split.
+        approach = max(0.0, 1.0 - abs(loop - 0.50) / 0.30)
+        offset = orbit * 0.76 * (1.0 - approach)
+        drift = math.sin(loop * math.tau) * orbit * 0.20
+        positions[0] = QPointF(center.x() - offset, center.y() + drift)
+        positions[1] = QPointF(center.x() + offset, center.y() - drift)
+
+        def glow(point: QPointF, color: QColor, radius: float) -> None:
+            gradient = QRadialGradient(point, radius * 3.0)
+            gradient.setColorAt(0.0, QColor(255, 255, 255, int(255 * fade_in)))
+            gradient.setColorAt(0.16, QColor(color.red(), color.green(), color.blue(), int(235 * fade_in)))
+            gradient.setColorAt(0.54, QColor(color.red(), color.green(), color.blue(), int(56 * fade_in)))
+            gradient.setColorAt(1.0, QColor(color.red(), color.green(), color.blue(), 0))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(gradient)
+            painter.drawEllipse(point, radius * 3.0, radius * 3.0)
+            painter.setBrush(QColor(255, 255, 255, int(230 * fade_in)))
+            painter.drawEllipse(point, max(1.4, radius * 0.30), max(1.4, radius * 0.30))
+
+        for index, point in enumerate(positions):
+            radius = 4.5 + 1.6 * math.sin(elapsed_s * 1.2 + index) ** 2
+            if index in (0, 1):
+                radius += collision * 8.0
+            glow(point, palette[index], radius)
+
+        if collision > 0.02:
+            flare = orbit * (0.16 + collision * 0.20)
+            painter.setPen(QColor(235, 250, 255, int(160 * collision * fade_in)))
+            painter.drawLine(QPointF(center.x() - flare, center.y()), QPointF(center.x() + flare, center.y()))
+            painter.drawLine(QPointF(center.x(), center.y() - flare), QPointF(center.x(), center.y() + flare))
+
+    def _paint_economy_loader_legacy(self, painter: QPainter, bounds: QRectF, elapsed_s: float, fade_in: float, is_light: bool) -> None:
+        """A calm, organic cosmic loader with a subtle katana constellation."""
+        center = QPointF(bounds.center().x(), bounds.height() * 0.36)
+        orbit = max(76.0, min(bounds.width(), bounds.height()) * 0.145)
+        sky = QColor(37, 99, 235) if is_light else QColor(112, 205, 255)
+        violet = QColor(124, 92, 255) if is_light else QColor(176, 140, 255)
+
+        # Three loose orbital paths give the animation a breathing, hand-drawn
+        # rhythm instead of a mechanical spinner.
+        for arm in range(3):
+            phase = elapsed_s * (0.32 + arm * 0.035) + arm * 2.15
+            path = QPainterPath()
+            path.moveTo(center.x() - orbit * 0.92, center.y() + math.sin(phase) * orbit * 0.26)
+            path.cubicTo(
+                center.x() - orbit * 0.28,
+                center.y() - orbit * (0.98 + 0.10 * math.cos(phase)),
+                center.x() + orbit * 0.48,
+                center.y() + orbit * (0.90 + 0.08 * math.sin(phase)),
+                center.x() + orbit * 1.02,
+                center.y() - math.cos(phase) * orbit * 0.24,
+            )
+            color = sky if arm != 1 else violet
+            painter.setPen(QColor(color.red(), color.green(), color.blue(), int(92 * fade_in)))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawPath(path)
+
+        for index in range(9):
+            phase = (elapsed_s * 0.21 + index / 9.0) % 1.0
+            angle = phase * math.tau + index * 0.29
+            radius = orbit * (0.54 + 0.43 * math.sin(index * 1.71 + elapsed_s * 0.22) ** 2)
+            x = center.x() + math.cos(angle) * radius
+            y = center.y() + math.sin(angle) * radius * 0.62
+            size = 2.2 + 3.2 * (0.5 + 0.5 * math.sin(elapsed_s * 1.8 + index))
+            color = sky if index % 3 else violet
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(color.red(), color.green(), color.blue(), int((145 + index * 11) * fade_in)))
+            painter.drawEllipse(QPointF(x, y), size, size)
+
+        # Crescent and a tiny diagonal katana form a restrained samurai mark.
+        moon_r = orbit * 0.29
+        painter.setPen(QColor(sky.red(), sky.green(), sky.blue(), int(190 * fade_in)))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawArc(QRectF(center.x() - moon_r, center.y() - moon_r, moon_r * 2, moon_r * 2), 38 * 16, 278 * 16)
+        painter.setPen(QColor(235, 248, 255, int(220 * fade_in)) if not is_light else QColor(30, 64, 175, int(220 * fade_in)))
+        painter.drawLine(
+            QPointF(center.x() - moon_r * 0.72, center.y() + moon_r * 0.50),
+            QPointF(center.x() + moon_r * 0.67, center.y() - moon_r * 0.58),
+        )
+        painter.setPen(QColor(220, 38, 38, int(210 * fade_in)))
+        painter.drawLine(
+            QPointF(center.x() - moon_r * 0.18, center.y() + moon_r * 0.08),
+            QPointF(center.x() + moon_r * 0.24, center.y() + moon_r * 0.08),
+        )
 
     # ------------------------------------------------------------------
     def paintEvent(self, event) -> None:  # noqa: N802
@@ -432,54 +1094,45 @@ class OptimizationProgressOverlay(QWidget):
         painter.fillRect(bounds, vignette)
 
         # ----------------------------------------------------------------
-        # Pulsing icon area (SIEKACZ "S" glyph or geometric shape)
+        # Use the prepared video render when available. ASCII remains as a
+        # self-contained fallback for source-only or damaged installations.
         # ----------------------------------------------------------------
         cx = bounds.center().x()
-        icon_cy = bounds.height() * 0.34
-
-        # Rotating ring
-        ring_r = min(bounds.width(), bounds.height()) * 0.095
-        ring_pen_color = (
-            QColor(30, 60, 120, int(90 * fade_in))
-            if is_light
-            else QColor(80, 140, 255, int(80 * fade_in))
-        )
-        angle_speed = elapsed_s * 180.0  # degrees/s  (half rotation)
-        for i in range(3):
-            ring_rr = ring_r * (1.0 + i * 0.28)
-            alpha_factor = (3 - i) / 3.0
-            ring_col = QColor(ring_pen_color)
-            ring_col.setAlpha(int(ring_col.alpha() * alpha_factor))
-            from PySide6.QtGui import QPen
-            pen = QPen(ring_col, max(1.0, ring_rr * 0.08))
-            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-            painter.setPen(pen)
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            arc_len = 120 + i * 30  # degrees of arc
-            start_angle = int((angle_speed * (1 + i * 0.4)) % 360 * 16)
-            arc_rect = QRectF(cx - ring_rr, icon_cy - ring_rr, ring_rr * 2, ring_rr * 2)
-            painter.drawArc(arc_rect, start_angle, arc_len * 16)
-
-        # Central glowing dot
-        pulse = 0.5 + 0.5 * math.sin(elapsed_s * math.pi * 1.6)
-        dot_r = max(5.0, ring_r * (0.22 + 0.06 * pulse))
-        dot_grad = QRadialGradient(QPointF(cx, icon_cy), dot_r * 3.0)
-        if is_light:
-            dot_grad.setColorAt(0.0, QColor(10, 30, 90, int(230 * fade_in)))
-            dot_grad.setColorAt(0.5, QColor(30, 80, 180, int(120 * fade_in)))
-            dot_grad.setColorAt(1.0, QColor(30, 80, 180, 0))
-        else:
-            dot_grad.setColorAt(0.0, QColor(255, 255, 255, int(240 * fade_in)))
-            dot_grad.setColorAt(0.5, QColor(140, 190, 255, int(110 * fade_in)))
-            dot_grad.setColorAt(1.0, QColor(60, 120, 255, 0))
-        painter.setBrush(dot_grad)
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.drawEllipse(QPointF(cx, icon_cy), dot_r * 3.0, dot_r * 3.0)
-        if is_light:
-            painter.setBrush(QColor(10, 30, 100, int(220 * fade_in)))
-        else:
-            painter.setBrush(QColor(255, 255, 255, int(235 * fade_in)))
-        painter.drawEllipse(QPointF(cx, icon_cy), dot_r, dot_r)
+        if self._animation_mode == "economy":
+            self._paint_economy_loader(painter, bounds, elapsed_s, fade_in, is_light)
+        elif not self._samurai_movie_available:
+            frame_index = int(elapsed_s / 0.16) % len(_SAMURAI_FRAMES)
+            frame_title, frame_art = _SAMURAI_FRAMES[frame_index]
+            sampler_font_size = max(9, min(16, int(bounds.width() / 72)))
+            samurai_font = QFont("Cascadia Mono", sampler_font_size)
+            samurai_font.setStyleHint(QFont.StyleHint.Monospace)
+            samurai_font.setWeight(QFont.Weight.DemiBold)
+            phase_font = QFont("Cascadia Mono", max(8, sampler_font_size - 4))
+            phase_font.setStyleHint(QFont.StyleHint.Monospace)
+            phase_font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 1.0)
+            painter.setFont(phase_font)
+            painter.setOpacity(0.72 * fade_in)
+            painter.setPen(QColor(25, 100, 160) if is_light else QColor(94, 201, 255))
+            painter.drawText(
+                QRectF(bounds.x() + 30, bounds.height() * 0.12, bounds.width() - 60, 22),
+                Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter,
+                f"[ {frame_title} ]",
+            )
+            painter.setFont(samurai_font)
+            painter.setOpacity(0.96 * fade_in)
+            painter.setPen(QColor(20, 45, 100) if is_light else QColor(215, 230, 255))
+            samurai_rect = QRectF(
+                bounds.x() + 28,
+                bounds.height() * 0.16,
+                bounds.width() - 56,
+                bounds.height() * 0.43,
+            )
+            painter.drawText(
+                samurai_rect,
+                Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter,
+                frame_art,
+            )
+            painter.setOpacity(1.0)
 
         # ----------------------------------------------------------------
         # Progress bar
@@ -487,7 +1140,7 @@ class OptimizationProgressOverlay(QWidget):
         bar_w = min(bounds.width() * 0.62, 380.0)
         bar_h = 6.0
         bar_x = cx - bar_w / 2.0
-        bar_y = bounds.height() * 0.58
+        bar_y = bounds.height() * 0.66
 
         # Track
         track_col = (
@@ -555,7 +1208,25 @@ class OptimizationProgressOverlay(QWidget):
         painter.drawText(elapsed_rect, Qt.AlignmentFlag.AlignRight, elapsed_label)
 
         # ----------------------------------------------------------------
-        # Current message (Sims-style)
+        # Actual optimizer state. This comes from the worker process, unlike
+        # the rotating fact below it.
+        # ----------------------------------------------------------------
+        status_font = QFont("Segoe UI", 9)
+        status_font.setWeight(QFont.Weight.DemiBold)
+        painter.setFont(status_font)
+        painter.setOpacity(0.82 * fade_in)
+        painter.setPen(
+            QColor(24, 78, 160) if is_light else QColor(116, 187, 255)
+        )
+        status_rect = QRectF(bounds.x() + 32, bar_y + bar_h + 20, bounds.width() - 64, 18)
+        painter.drawText(
+            status_rect,
+            Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter,
+            f"Stan obliczen: {self.state.currentStageLabel}",
+        )
+
+        # ----------------------------------------------------------------
+        # Current message (world fact)
         # ----------------------------------------------------------------
         msg_alpha = self._msg_alpha() * fade_in
         msg_font = QFont("Segoe UI", 11)
@@ -565,7 +1236,7 @@ class OptimizationProgressOverlay(QWidget):
         painter.setPen(
             QColor(20, 40, 100) if is_light else QColor(200, 220, 255)
         )
-        msg_rect = QRectF(bounds.x() + 32, bar_y + bar_h + 28, bounds.width() - 64, 30)
+        msg_rect = QRectF(bounds.x() + 32, bar_y + bar_h + 44, bounds.width() - 64, 44)
         painter.drawText(msg_rect, Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter, self._msg_label)
 
         # ----------------------------------------------------------------

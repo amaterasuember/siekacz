@@ -84,13 +84,17 @@ def _table(data: list[list[object]], widths: list[float] | None = None) -> Table
     table.setStyle(
         TableStyle(
             [
-                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#26313d")),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#153e63")),
                 ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-                ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#9aa4af")),
+                ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#d6dee8")),
                 ("FONTNAME", (0, 0), (-1, -1), _PDF_FONT),
                 ("FONTNAME", (0, 0), (-1, 0), _PDF_FONT_BOLD),
                 ("FONTSIZE", (0, 0), (-1, -1), 8),
                 ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+                ("TOPPADDING", (0, 0), (-1, -1), 5),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
                 ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f2f5f8")]),
             ]
         )
@@ -108,14 +112,16 @@ class SheetFlowable(Flowable):
     the operator cuts one drawing N times instead of flipping through N copies.
     """
 
-    _PART_FILL = colors.HexColor("#dbeafe")
-    _PART_STROKE = colors.HexColor("#1e3a5f")
-    _STOCK_STROKE = colors.HexColor("#111827")
-    _MISSING_FILL = colors.HexColor("#fee2e2")
-    _MISSING_STROKE = colors.HexColor("#b91c1c")
+    _BOARD_FILL = colors.HexColor("#e8f1fb")
+    _BOARD_GRID = colors.HexColor("#d4e2f1")
+    _PART_FILL = colors.HexColor("#fafdff")
+    _PART_STROKE = colors.HexColor("#25486b")
+    _STOCK_STROKE = colors.HexColor("#17324d")
+    _MISSING_FILL = colors.HexColor("#fff7ed")
+    _MISSING_STROKE = colors.HexColor("#9a3412")
 
     def __init__(self, layout: SheetLayout, count: int, avail_w: float, avail_h: float,
-                 caption: str, missing: bool = False) -> None:
+                 caption: str, missing: bool = False, display_orientation: str = "horizontal", symbol_map: dict | None = None) -> None:
         super().__init__()
         self.layout = layout
         self.count = max(1, int(count))
@@ -123,6 +129,12 @@ class SheetFlowable(Flowable):
         self.height = avail_h
         self.caption = caption
         self.missing = missing
+        self.symbol_map = symbol_map
+
+    def _map_rect(self, x: float, y: float, w: float, h: float) -> tuple[float, float, float, float]:
+        if getattr(self, "display_rotated", False):
+            return y, self.layout.stock.width - (x + w), h, w
+        return x, y, w, h
 
     def wrap(self, avail_w: float, avail_h: float) -> tuple[float, float]:
         self.width = avail_w
@@ -142,63 +154,283 @@ class SheetFlowable(Flowable):
         draw_h = max(10.0, draw_top)
         draw_w = self.width
 
-        sw = float(self.layout.stock.width) or 1.0
-        sh = float(self.layout.stock.height) or 1.0
+        stock_w = float(self.layout.stock.width) or 1.0
+        stock_h = float(self.layout.stock.height) or 1.0
+
+        if getattr(self, "display_orientation", "horizontal") == "vertical":
+            self.display_rotated = stock_w > stock_h
+        else:
+            self.display_rotated = stock_h > stock_w
+
+        if self.display_rotated:
+            self.display_sw = stock_h
+            self.display_sh = stock_w
+        else:
+            self.display_sw = stock_w
+            self.display_sh = stock_h
+
         # Leave a margin for dimension labels around the board.
         pad = 16.0
-        scale = min((draw_w - 2 * pad) / sw, (draw_h - 2 * pad) / sh)
+        scale = min((draw_w - 2 * pad) / self.display_sw, (draw_h - 2 * pad) / self.display_sh)
         scale = max(scale, 0.0001)
-        board_w = sw * scale
-        board_h = sh * scale
-        ox = (draw_w - board_w) / 2.0
+        board_w = self.display_sw * scale
+        board_h = self.display_sh * scale
+        ox = pad
         oy = (draw_h - board_h) / 2.0
 
-        # Board outline.
+        # A restrained technical-board treatment keeps the drawing readable on
+        # screen and in colour print without disguising the actual geometry.
+        canvas.setFillColor(colors.HexColor("#dce6f1"))
+        canvas.roundRect(ox + 1.5, oy - 1.5, board_w, board_h, 4, stroke=0, fill=1)
         canvas.setLineWidth(1.1)
         canvas.setStrokeColor(self._STOCK_STROKE)
-        canvas.setFillColor(colors.HexColor("#f8fafc"))
-        canvas.rect(ox, oy, board_w, board_h, stroke=1, fill=1)
+        canvas.setFillColor(self._BOARD_FILL)
+        canvas.roundRect(ox, oy, board_w, board_h, 4, stroke=1, fill=1)
+
+        canvas.saveState()
+        clip = canvas.beginPath()
+        clip.rect(ox, oy, board_w, board_h)
+        canvas.clipPath(clip, stroke=0, fill=0)
+        canvas.setStrokeColor(self._BOARD_GRID)
+        canvas.setLineWidth(0.22)
+        grid_step = max(16.0, min(34.0, min(board_w, board_h) / 9.0))
+        x = ox + grid_step
+        while x < ox + board_w:
+            canvas.line(x, oy, x, oy + board_h)
+            x += grid_step
+        y = oy + grid_step
+        while y < oy + board_h:
+            canvas.line(ox, y, ox + board_w, y)
+            y += grid_step
+        canvas.restoreState()
 
         part_fill = self._MISSING_FILL if self.missing else self._PART_FILL
         part_stroke = self._MISSING_STROKE if self.missing else self._PART_STROKE
 
         for placement in self.layout.parts:
-            # Board origin is top-left in layout coords; PDF origin is bottom-left.
-            px = ox + placement.x * scale
-            py = oy + board_h - (placement.y + placement.height) * scale
-            pw = placement.width * scale
-            ph = placement.height * scale
-            canvas.setLineWidth(0.6)
+            lx, ly, lw, lh = self._map_rect(placement.x, placement.y, placement.width, placement.height)
+            px = ox + lx * scale
+            py = oy + board_h - (ly + lh) * scale
+            pw = lw * scale
+            ph = lh * scale
+            canvas.setLineWidth(0.65)
             canvas.setStrokeColor(part_stroke)
             canvas.setFillColor(part_fill)
             canvas.rect(px, py, pw, ph, stroke=1, fill=1)
             self._label_part(canvas, placement, px, py, pw, ph, part_stroke)
 
-        self._draw_cut_operations(canvas, ox, oy, board_w, board_h, scale)
+        # Draw dimensions along the sides
+        vbands = self._compute_bands("x")
+        hbands = self._compute_bands("y")
+        
+        canvas.setFont(_PDF_FONT, 7)
+        canvas.setFillColor(colors.HexColor("#475569"))
+        canvas.setStrokeColor(colors.HexColor("#94a3b8"))
+        canvas.setLineWidth(0.5)
 
-        # ×N badge.
-        if self.count > 1:
-            self._draw_count_badge(canvas, ox + board_w, oy + board_h)
+        tick = 2.5
+        
+        def _band_label(group) -> str:
+            if bool(group["uniform"]) and int(group["n"]) > 1:
+                return f"{int(group['n'])} x {group['w']:.0f}"
+            return f"{group['total']:.0f}"
+
+        top_y = oy + board_h + 8
+        left_x = ox - 12
+
+        if self.display_rotated:
+            # Rotated: layout X goes to left edge, layout Y goes to top edge
+            sw = self.layout.stock.width
+            for g in vbands:
+                y2 = oy + board_h - (sw - g["end"]) * scale
+                y1 = oy + board_h - (sw - g["start"]) * scale
+                if y2 - y1 < 10: continue
+                canvas.line(left_x, y1, left_x, y2)
+                canvas.line(left_x - tick, y1, left_x + tick, y1)
+                canvas.line(left_x - tick, y2, left_x + tick, y2)
+                lbl = _band_label(g)
+                canvas.saveState()
+                canvas.translate(left_x - 3, (y1+y2)/2)
+                canvas.rotate(90)
+                canvas.drawCentredString(0, 0, lbl)
+                canvas.restoreState()
+            for g in hbands:
+                x1 = ox + g["start"] * scale
+                x2 = ox + g["end"] * scale
+                if x2 - x1 < 10: continue
+                canvas.line(x1, top_y, x2, top_y)
+                canvas.line(x1, top_y - tick, x1, top_y + tick)
+                canvas.line(x2, top_y - tick, x2, top_y + tick)
+                lbl = _band_label(g)
+                canvas.drawCentredString((x1+x2)/2, top_y + 3, lbl)
+        else:
+            # Normal: layout X goes to top edge, layout Y goes to left edge
+            for g in vbands:
+                x1 = ox + g["start"] * scale
+                x2 = ox + g["end"] * scale
+                if x2 - x1 < 10: continue
+                canvas.line(x1, top_y, x2, top_y)
+                canvas.line(x1, top_y - tick, x1, top_y + tick)
+                canvas.line(x2, top_y - tick, x2, top_y + tick)
+                lbl = _band_label(g)
+                canvas.drawCentredString((x1+x2)/2, top_y + 3, lbl)
+            for g in hbands:
+                y2 = oy + board_h - g["start"] * scale
+                y1 = oy + board_h - g["end"] * scale
+                if y2 - y1 < 10: continue
+                canvas.line(left_x, y1, left_x, y2)
+                canvas.line(left_x - tick, y1, left_x + tick, y1)
+                canvas.line(left_x - tick, y2, left_x + tick, y2)
+                lbl = _band_label(g)
+                canvas.saveState()
+                canvas.translate(left_x - 3, (y1+y2)/2)
+                canvas.rotate(90)
+                canvas.drawCentredString(0, 0, lbl)
+                canvas.restoreState()
 
         canvas.restoreState()
 
+    def _compute_bands(self, axis: str) -> list[dict]:
+        parts = list(getattr(self.layout, "parts", []) or [])
+        if not parts:
+            return []
+        EPS = 0.5
+        if axis == "x":
+            pos = lambda p: p.x
+            size = lambda p: p.width
+        else:
+            pos = lambda p: p.y
+            size = lambda p: p.height
+        used = max((pos(p) + size(p)) for p in parts)
+
+        def is_clear(v: float) -> bool:
+            for p in parts:
+                if pos(p) + EPS < v < pos(p) + size(p) - EPS:
+                    return False
+            return True
+
+        edges = set()
+        for p in parts:
+            edges.add(round(pos(p), 2))
+            edges.add(round(pos(p) + size(p), 2))
+        interior = sorted(e for e in edges if EPS < e < used - EPS and is_clear(e))
+
+        cuts: list[float] = []
+        for c in [0.0, *interior, used]:
+            if not cuts or abs(c - cuts[-1]) > EPS:
+                cuts.append(c)
+
+        fine: list[dict] = []
+        for a, b in zip(cuts, cuts[1:]):
+            extent = b - a
+            if extent <= EPS:
+                continue
+            inside = [p for p in parts if pos(p) >= a - EPS and pos(p) + size(p) <= b + EPS]
+            if not inside:
+                continue
+            area: dict[tuple, float] = {}
+            for p in inside:
+                key = tuple(sorted((round(p.part.width), round(p.part.height))))
+                area[key] = area.get(key, 0.0) + p.width * p.height
+            dominant = max(area, key=area.get)
+            fine.append({"a": a, "b": b, "w": extent, "key": dominant})
+
+        merge_gap = 8.0
+        blocks: list[dict] = []
+        width_tol = 3.0
+        for strip in fine:
+            if (
+                blocks
+                and blocks[-1]["key"] == strip["key"]
+                and abs(strip["w"] - blocks[-1]["widths"][-1]) < width_tol
+                and (strip["a"] - blocks[-1]["end"]) < merge_gap
+            ):
+                blocks[-1]["end"] = strip["b"]
+                blocks[-1]["widths"].append(strip["w"])
+            else:
+                blocks.append({
+                    "start": strip["a"],
+                    "end": strip["b"],
+                    "key": strip["key"],
+                    "widths": [strip["w"]],
+                })
+
+        groups: list[dict] = []
+        for blk in blocks:
+            widths = blk["widths"]
+            count = len(widths)
+            total = blk["end"] - blk["start"]
+            mean_w = sum(widths) / count
+            uniform = count > 1 and (max(widths) - min(widths) < 3.0)
+            if uniform and blk["key"]:
+                snap = min(blk["key"], key=lambda d: abs(d - mean_w))
+                disp_w = float(snap) if abs(snap - mean_w) < 4.0 else mean_w
+            else:
+                disp_w = mean_w
+            groups.append({
+                "start": blk["start"],
+                "end": blk["end"],
+                "total": total,
+                "n": count,
+                "w": disp_w,
+                "uniform": uniform,
+            })
+        return groups
+
     def _label_part(self, canvas, placement, px, py, pw, ph, color) -> None:
-        if pw < 14 or ph < 9:
-            return
         name = getattr(placement.part, "name", "") or ""
-        dims = f"{placement.width:.0f}×{placement.height:.0f}"
-        if placement.rotated:
-            dims += " ↻"
+        sym = ""
+        if hasattr(self, "symbol_map") and self.symbol_map:
+            key = (max(placement.part.width, placement.part.height), min(placement.part.width, placement.part.height))
+            sym = self.symbol_map.get(key, "")
+
+        # The dimension is the primary label.  It is anchored to the lower
+        # right end of the longer edge and is retained even when a small part
+        # cannot also carry its symbol.
+        dim_text = f"{placement.part.width:.0f}x{placement.part.height:.0f}"
+        portrait = ph > pw
+        available = ph if portrait else pw
+        dim_fs = max(3.0, min(7.0, available / max(3.0, len(dim_text) * 0.62)))
+        margin = max(1.2, min(3.0, min(pw, ph) * 0.08))
         canvas.setFillColor(color)
-        canvas.setFont(_PDF_FONT_BOLD, 6.5)
+        canvas.setFont(_PDF_FONT, dim_fs)
+        if portrait:
+            canvas.saveState()
+            canvas.translate(px + pw - margin, py + margin)
+            canvas.rotate(90)
+            canvas.drawRightString(ph - 2 * margin, 0, dim_text)
+            canvas.restoreState()
+        else:
+            canvas.drawRightString(px + pw - margin, py + margin, dim_text)
+
+        text = sym or name[:14]
+        if not text:
+            return
+
+        # A symbol is only useful when it has its own area.  On dense layouts
+        # this deliberately leaves just the dimension instead of overlapping
+        # the two labels.  Rotating portrait symbols makes their baseline run
+        # along the longer side, so a turned 40x41 part remains obvious.
+        long_edge = ph if portrait else pw
+        short_edge = pw if portrait else ph
+        max_fs_long = long_edge * 0.62 / max(1.0, len(text) * 0.60)
+        max_fs_short = short_edge * 0.40
+        symbol_fs = min(14.0, max_fs_long, max_fs_short)
+        required_cross = dim_fs * 1.75 + symbol_fs * 1.45 + margin * 3.0
+        if symbol_fs < 4.0 or short_edge < required_cross:
+            return
+
         cx = px + pw / 2.0
         cy = py + ph / 2.0
-        if name and ph > 20:
-            canvas.drawCentredString(cx, cy + 2, name[:14])
-            canvas.setFont(_PDF_FONT, 6)
-            canvas.drawCentredString(cx, cy - 6, dims)
+        canvas.setFont(_PDF_FONT_BOLD, symbol_fs)
+        if portrait:
+            canvas.saveState()
+            canvas.translate(cx, cy)
+            canvas.rotate(90)
+            canvas.drawCentredString(0, -symbol_fs * 0.35, text)
+            canvas.restoreState()
         else:
-            canvas.drawCentredString(cx, cy - 3, dims)
+            canvas.drawCentredString(cx, cy - symbol_fs * 0.35, text)
 
     def _draw_count_badge(self, canvas, right_x, top_y) -> None:
         label = f"×{self.count}"
@@ -215,12 +447,10 @@ class SheetFlowable(Flowable):
         canvas.drawCentredString(cx, cy - 3, label)
 
     def _draw_cut_operations(self, canvas, ox, oy, board_w, board_h, scale) -> None:
+        return  # CUT SEQUENCES DISABLED TEMPORARILY
         operations = sorted(getattr(self.layout, "cut_operations", []) or [], key=lambda op: int(getattr(op, "step", 0)))
         if not operations:
             return
-        if len(operations) > 70:
-            reduced = [op for op in operations if getattr(op, "kind", "") in {"rip", "cross"}]
-            operations = (reduced or operations)[:70]
         for op in operations:
             orientation = str(getattr(op, "orientation", ""))
             x = float(getattr(op, "x", 0.0) or 0.0)
@@ -239,7 +469,7 @@ class SheetFlowable(Flowable):
                 x2 = ox + (x + length) * scale
                 y2 = y1
             kind = str(getattr(op, "kind", "cut"))
-            color = colors.HexColor("#2563eb" if kind == "rip" else "#d97706" if kind == "cross" else "#7c3aed")
+            color = colors.HexColor("#000000")
             canvas.setStrokeColor(color)
             canvas.setLineWidth(0.45)
             canvas.line(x1, y1, x2, y2)
@@ -262,9 +492,13 @@ def _styles():
     base = getSampleStyleSheet()
     return {
         "title": ParagraphStyle("IndustrialTitle", parent=base["Title"],
-                                 textColor=colors.HexColor("#1f4f78"), fontName=_PDF_FONT_BOLD),
-        "heading": ParagraphStyle("PDFHeading2", parent=base["Heading2"], fontName=_PDF_FONT_BOLD),
-        "normal": ParagraphStyle("PDFBodyText", parent=base["BodyText"], fontName=_PDF_FONT),
+                                 textColor=colors.HexColor("#0f3d66"), fontName=_PDF_FONT_BOLD,
+                                 fontSize=22, leading=26, spaceAfter=4),
+        "heading": ParagraphStyle("PDFHeading2", parent=base["Heading2"], fontName=_PDF_FONT_BOLD,
+                                   textColor=colors.HexColor("#153e63"), fontSize=15, leading=19,
+                                   spaceBefore=8, spaceAfter=5),
+        "normal": ParagraphStyle("PDFBodyText", parent=base["BodyText"], fontName=_PDF_FONT,
+                                  textColor=colors.HexColor("#334155"), leading=14),
     }
 
 
@@ -287,55 +521,15 @@ def _front_matter(story, project: Project, result: OptimizationResult | None, co
     story.append(Spacer(1, 6 * mm))
 
     if result:
-        metrics_summary = None
-        try:
-            metrics_summary = compute_cut_summary(result)
-        except Exception as exc:
-            _logger.warning("Cut-metric summary failed: %s", exc)
-        if metrics_summary and metrics_summary.total_board_area_m2 > 0:
-            utilization_text = f"{metrics_summary.total_area_m2 / metrics_summary.total_board_area_m2 * 100.0:.1f}%"
-            waste_text = (
-                f"{metrics_summary.total_waste_m2:.3f} m² ścinki, "
-                f"{metrics_summary.total_reusable_m2:.3f} m² resztki"
-            )
-        else:
-            utilization_text = f"{result.utilization:.1f}%"
-            waste_text = f"{result.waste:.1f}"
-        story.append(Paragraph("Podsumowanie optymalizacji", styles["heading"]))
-        story.append(_table(
-            [
-                ["Typ zlecenia", result.job_type],
-                ["Algorytm", result.algorithm],
-                ["Układy", len(result.sheet_layouts) or len(result.linear_layouts)],
-                ["Dodatkowe arkusze", len(result.missing_sheet_layouts)],
-                ["Nieumieszczone formatki", len(result.unplaced_sheet_parts)],
-                ["Wykorzystanie rozliczane", utilization_text],
-                ["Odpad / resztki", waste_text],
-                ["Szacowany koszt", f"{result.total_cost:.2f}"],
-            ],
-            [50 * mm, 110 * mm],
-        ))
-        story.append(Spacer(1, 6 * mm))
         _cut_metrics_section(story, result, styles)
 
     if project.sheet_parts:
-        rows = [["Formatka", "Szer.", "Wys.", "Ilość", "Materiał", "Grubość", "Etykieta"]]
-        rows.extend([[p.name, p.width, p.height, p.quantity, p.material, p.thickness, p.label]
+        rows = [["Grubość", "Formatka", "Szer.", "Wys.", "Ilość", "Materiał", "Etykieta"]]
+        rows.extend([[p.thickness, p.name, p.width, p.height, p.quantity, p.material, p.label]
                      for p in project.sheet_parts])
         story.append(Paragraph("Formatki płytowe", styles["heading"]))
         story.append(_table(rows))
         story.append(Spacer(1, 5 * mm))
-
-    if result and result.reusable_offcuts:
-        rows = [["Typ", "Materiał", "Rozmiar", "Źródło"]]
-        for item in result.reusable_offcuts:
-            size = (f"{item.get('width')} x {item.get('height')}"
-                    if item.get("type") == "sheet" else str(item.get("length")))
-            rows.append([item.get("type", ""), item.get("material", ""), size, item.get("source", "")])
-        story.append(Paragraph("Użyteczne odpady", styles["heading"]))
-        story.append(_table(rows))
-        story.append(Spacer(1, 5 * mm))
-
 
 def _cut_metrics_section(story, result: OptimizationResult, styles) -> None:
     try:
@@ -345,31 +539,28 @@ def _cut_metrics_section(story, result: OptimizationResult, styles) -> None:
         return
     if not summary.formats:
         return
-    story.append(Paragraph("Metryki cięcia", styles["heading"]))
+    story.append(Paragraph("Parametry realizacji", styles["heading"]))
     rows: list[list[object]] = [[
-        "Format", "Wymiar [mm]", "Szt.", "Obrót", "Cięć", "mb piły",
-        "Netto m²", "Odpad m²", "Resztki m²", "Rozlicz. m²",
+        "Format", "Szt.", "Cięć", "mb piły",
+        "Netto m²", "Odpad m²", "Rozlicz. m²",
     ]]
     for fmt in summary.formats:
         rows.append([
-            fmt.name,
             f"{fmt.width:.0f}×{fmt.height:.0f}",
             fmt.pieces,
-            fmt.rotated or "—",
             fmt.cuts,
             f"{fmt.saw_m:.2f}",
             f"{fmt.area_m2:.3f}",
             f"{fmt.waste_m2:.3f}",
-            f"{fmt.reusable_m2:.3f}",
             f"{fmt.gross_m2:.3f}",
         ])
     rows.append([
-        "RAZEM", "—", summary.total_pieces, summary.total_rotated,
-        summary.total_cuts, f"{summary.total_saw_m:.2f}", f"{summary.total_area_m2:.3f}",
-        f"{summary.total_waste_m2:.3f}", f"{summary.total_reusable_m2:.3f}",
+        "RAZEM", summary.total_pieces, summary.total_cuts,
+        f"{summary.total_saw_m:.2f}", f"{summary.total_area_m2:.3f}",
+        f"{summary.total_waste_m2:.3f}",
         f"{summary.total_board_area_m2:.3f}",
     ])
-    table = _table(rows, [26 * mm, 21 * mm, 11 * mm, 11 * mm, 12 * mm, 17 * mm, 16 * mm, 16 * mm, 17 * mm, 17 * mm])
+    table = _table(rows, [44 * mm, 14 * mm, 15 * mm, 24 * mm, 25 * mm, 25 * mm, 28 * mm])
     table.setStyle(TableStyle([
         ("FONTNAME", (0, -1), (-1, -1), _PDF_FONT_BOLD),
         ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#e5edf5")),
@@ -382,7 +573,6 @@ def _cut_metrics_section(story, result: OptimizationResult, styles) -> None:
         f"obrotów: <b>{summary.total_rotated}</b> &nbsp;|&nbsp; "
         f"netto: <b>{summary.total_area_m2:.3f} m²</b> &nbsp;|&nbsp; "
         f"odpad produkcyjny: <b>{summary.total_waste_m2:.3f} m²</b> &nbsp;|&nbsp; "
-        f"resztki magazynowe: <b>{summary.total_reusable_m2:.3f} m²</b> &nbsp;|&nbsp; "
         f"szacowany czas: <b>{format_cut_time(summary.total_time_s)}</b>",
         styles["normal"],
     ))
@@ -397,26 +587,88 @@ def _drawing_box() -> tuple[float, float]:
     return avail_w, block_h
 
 
-def _append_drawings(story, groups, styles, missing: bool, block_w: float, block_h: float) -> None:
-    label = "Brakujący arkusz" if missing else "Arkusz"
+def _append_drawings(story, groups, styles, missing: bool, block_w: float, block_h: float, display_orientation: str = "horizontal", symbol_map: dict | None = None) -> None:
     for group in groups:
         layout = group.representative
         sheet_no = getattr(layout, "sheet_index", "?")
         util = f"{layout.utilization:.0f}%"
         cuts = int(getattr(layout, "cut_count", 0))
         t = format_cut_time(getattr(layout, "estimated_cut_time_s", 0.0))
-        count_txt = f" (×{group.count})" if group.count > 1 else ""
+        sheet_numbers = [str(value) for value in getattr(group, "display_sheet_indices", [])] or [str(getattr(layout, "display_sheet_index", sheet_no))]
+        if len(sheet_numbers) == 1:
+            number_text = f"nr {sheet_numbers[0]}"
+        elif len(sheet_numbers) == 2:
+            number_text = f"nr {sheet_numbers[0]} i {sheet_numbers[1]}"
+        else:
+            number_text = "nr " + ", ".join(sheet_numbers[:-1]) + f" i {sheet_numbers[-1]}"
+        thickness = float(getattr(layout.stock, "thickness", 0.0) or 0.0)
+        missing_text = "brakująca, " if missing else ""
+        material = str(getattr(layout.stock, "material", "") or "Materiał").strip()
         caption = (
-            f"{label} {sheet_no}{count_txt}  •  {layout.stock.width:.0f}×{layout.stock.height:.0f} mm  "
+            f"{material} · gr. {thickness:g} mm — {number_text}  •  "
+            f"{layout.stock.width:.0f}×{layout.stock.height:.0f} mm  "
             f"•  wyk. {util}  •  cięć {cuts}  •  {t}"
         )
-        story.append(SheetFlowable(layout, group.count, block_w, block_h, caption, missing=missing))
+        story.append(SheetFlowable(layout, group.count, block_w, block_h, caption, missing=missing, display_orientation=display_orientation, symbol_map=symbol_map))
+        story.append(Spacer(1, 2 * mm))
+        
+        # Build legend for this sheet
+        legend_parts = {}
+        for placement in layout.parts:
+            pw, ph = float(placement.part.width), float(placement.part.height)
+            key = (max(pw, ph), min(pw, ph))
+            if key not in legend_parts:
+                sym = symbol_map.get(key, "") if symbol_map else ""
+                legend_parts[key] = {
+                    "symbol": sym,
+                    "width": pw,
+                    "height": ph,
+                    "count": 0
+                }
+            legend_parts[key]["count"] += 1
+            
+        if legend_parts:
+            items = []
+            for k, data in sorted(legend_parts.items(), key=lambda x: x[1]["symbol"]):
+                items.append(f"<b>{data['symbol']}</b> — {data['width']:.0f}×{data['height']:.0f} mm ({data['count']} szt.)")
+            legend_text = "<b>Legenda formatek:</b> &nbsp;&nbsp;" + " &nbsp;|&nbsp; ".join(items)
+            
+            # Use a slightly smaller font for the legend
+            legend_style = ParagraphStyle(
+                'Legend',
+                parent=styles["normal"],
+                fontSize=7,
+                leading=10,
+                textColor=colors.HexColor("#334155")
+            )
+            story.append(Paragraph(legend_text, legend_style))
+            story.append(Spacer(1, 3 * mm))
+
+        # The legend belongs directly to the drawing.  The operator's blank
+        # time fields are an administrative note and therefore come afterwards.
+        time_data = [
+            ["Rozpoczęcie cięcia:", ""],
+            ["Zakończenie cięcia:", ""],
+        ]
+        time_table = Table(time_data, colWidths=[35*mm, 60*mm])
+        time_table.setStyle(TableStyle([
+            ("FONTNAME", (0, 0), (-1, -1), _PDF_FONT),
+            ("FONTSIZE", (0, 0), (-1, -1), 9),
+            ("TEXTCOLOR", (0, 0), (-1, -1), colors.HexColor("#475569")),
+            ("LINEBELOW", (1, 0), (1, 0), 0.5, colors.HexColor("#94a3b8")),
+            ("LINEBELOW", (1, 1), (1, 1), 0.5, colors.HexColor("#94a3b8")),
+            ("VALIGN", (0, 0), (-1, -1), "BOTTOM"),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+            ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ]))
+        story.append(time_table)
         story.append(Spacer(1, 6 * mm))
 
 
 def _build_document(path: Path, project: Project, result: OptimizationResult | None,
                     company_name: str, sheet_groups, missing_groups,
-                    continuation_index: int) -> None:
+                    continuation_index: int, skip_summary: bool = False,
+                    display_orientation: str = "horizontal", symbol_map: dict | None = None) -> None:
     styles = _styles()
     doc = SimpleDocTemplate(
         str(path), pagesize=A4,
@@ -427,9 +679,11 @@ def _build_document(path: Path, project: Project, result: OptimizationResult | N
     block_w, block_h = _drawing_box()
 
     if continuation_index == 0:
-        _front_matter(story, project, result, company_name, styles)
+        if not skip_summary:
+            _front_matter(story, project, result, company_name, styles)
+            if sheet_groups or missing_groups:
+                story.append(PageBreak())
         if sheet_groups or missing_groups:
-            story.append(PageBreak())
             story.append(Paragraph("Rozkroje płyt", styles["heading"]))
             story.append(Spacer(1, 3 * mm))
     else:
@@ -438,11 +692,11 @@ def _build_document(path: Path, project: Project, result: OptimizationResult | N
             styles["heading"]))
         story.append(Spacer(1, 3 * mm))
 
-    _append_drawings(story, sheet_groups, styles, False, block_w, block_h)
+    _append_drawings(story, sheet_groups, styles, False, block_w, block_h, display_orientation, symbol_map)
     if missing_groups:
-        story.append(Paragraph("Brakujące arkusze", styles["heading"]))
+        story.append(Paragraph("Brakujące płyty", styles["heading"]))
         story.append(Spacer(1, 2 * mm))
-        _append_drawings(story, missing_groups, styles, True, block_w, block_h)
+        _append_drawings(story, missing_groups, styles, True, block_w, block_h, display_orientation, symbol_map)
 
     if not story:
         story.append(Paragraph("Brak danych do raportu.", styles["normal"]))
@@ -459,7 +713,8 @@ def _build_document(path: Path, project: Project, result: OptimizationResult | N
 
 
 def generate_pdf(path: str | Path, project: Project, result: OptimizationResult | None,
-                 company_name: str = "", sheets_per_pdf: int = SHEETS_PER_PDF) -> list[Path]:
+                 company_name: str = "", sheets_per_pdf: int = SHEETS_PER_PDF,
+                 skip_summary: bool = False, display_orientation: str = "horizontal") -> list[Path]:
     """Render a visual cutting report.
 
     Returns the list of written file paths.  ``path`` is always the first file;
@@ -471,7 +726,21 @@ def generate_pdf(path: str | Path, project: Project, result: OptimizationResult 
     missing_groups: list = []
     if result:
         sheet_groups = group_identical_layouts(result.sheet_layouts)
-        missing_groups = group_identical_layouts(result.missing_sheet_layouts)
+        # We do not generate missing sheets in the PDF report anymore per user request.
+
+    symbol_map = {}
+    if project:
+        alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+        for part in project.sheet_parts:
+            w, h = float(part.width), float(part.height)
+            key = (max(w, h), min(w, h))
+            if key not in symbol_map:
+                idx = len(symbol_map)
+                if idx < 26:
+                    sym = alphabet[idx]
+                else:
+                    sym = alphabet[(idx // 26) - 1] + alphabet[idx % 26]
+                symbol_map[key] = sym
 
     # Split the *board groups* into chunks for continuation files.  Front matter
     # always lives in the first file.
@@ -490,6 +759,6 @@ def generate_pdf(path: str | Path, project: Project, result: OptimizationResult 
             target = base.with_name(f"{base.stem}_cz{index + 1}{base.suffix}")
         s_groups = [g for g, is_missing in group_chunk if not is_missing]
         m_groups = [g for g, is_missing in group_chunk if is_missing]
-        _build_document(target, project, result, company_name, s_groups, m_groups, index)
+        _build_document(target, project, result, company_name, s_groups, m_groups, index, skip_summary, display_orientation, symbol_map)
         written.append(target)
     return written

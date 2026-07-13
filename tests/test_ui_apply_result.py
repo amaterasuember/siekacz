@@ -44,6 +44,7 @@ from PySide6.QtWidgets import QApplication
 from app.simple_window import SimpleCutWindow
 from core.models import (
     OptimizationSettings,
+    OptimizationResult,
     PlacedSheetPart,
     Project,
     SheetLayout,
@@ -116,6 +117,40 @@ def test_apply_result_with_missing_sheets_does_not_crash() -> None:
     # The crash happened here, inside _apply_result -> _rebuild_sheet_nav.
     window._apply_result(result)
     print("[OK] _apply_result with missing sheets does not crash")
+
+
+def test_missing_sheets_follow_the_matching_material_and_thickness_group() -> None:
+    """A missing board belongs below its matching material/thickness group."""
+    _app()
+    pom_stock = SheetStock("POM C", 20, 2000, 1000, 1, allow_rotation=True)
+    pe_stock = SheetStock("PE1000", 25, 2000, 1000, 1, allow_rotation=True)
+    pom_part = SheetPart("POM part", 200, 200, 1, "POM C", 20, allow_rotation=True)
+    pe_part = SheetPart("PE part", 200, 200, 1, "PE1000", 25, allow_rotation=True)
+
+    pom_layout = SheetLayout(stock=pom_stock, sheet_index=1)
+    pom_layout.parts.append(PlacedSheetPart(pom_part, 0, 0, 200, 200, False))
+    pe_layout = SheetLayout(stock=pe_stock, sheet_index=2)
+    pe_layout.parts.append(PlacedSheetPart(pe_part, 0, 0, 200, 200, False))
+    missing_layout = SheetLayout(stock=pom_stock, sheet_index=3)
+    missing_layout.parts.append(PlacedSheetPart(pom_part, 0, 0, 200, 200, False))
+
+    result = OptimizationResult(
+        job_type="sheet",
+        algorithm="test",
+        sheet_layouts=[pom_layout, pe_layout],
+        missing_sheet_layouts=[missing_layout],
+    )
+    view = LayoutView()
+    try:
+        view.show_result(result)
+        labels = [label.casefold() for label in view.nav_chip_labels()]
+        assert "pom c" in labels[0], labels
+        assert labels[1].startswith("brakuj"), labels
+        assert "pom c" in labels[1], labels
+        assert "pe1000" in labels[2], labels
+        print("[OK] missing boards follow their material/thickness group")
+    finally:
+        view.deleteLater()
 
 
 def test_worker_finished_always_stops_overlay() -> None:
@@ -258,6 +293,7 @@ def test_vertical_bands_same_formatka_is_one_block() -> None:
 if __name__ == "__main__":
     test_rebuild_sheet_nav_survives_repeated_rebuilds()
     test_apply_result_with_missing_sheets_does_not_crash()
+    test_missing_sheets_follow_the_matching_material_and_thickness_group()
     test_worker_finished_always_stops_overlay()
     test_vertical_bands_group_identical_columns()
     test_vertical_bands_separate_distinct_widths()

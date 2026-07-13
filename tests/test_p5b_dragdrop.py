@@ -158,9 +158,9 @@ def test_drop_appends_rows_and_single_undo() -> None:
         rows = _snapshot(window)
         assert len(rows) == len(baseline) + 3, f"expected 3 added rows, got {rows}"
         assert rows[-3:] == [
-            ("300.0", "500.0", "2"),
-            ("200.0", "150.0", "4"),
-            ("100.0", "100.0", "1"),
+            ("300", "500", "2"),
+            ("200", "150", "4"),
+            ("100", "100", "1"),
         ], rows[-3:]
         assert len(window._parts_undo_stack) == initial_undo_depth + 1, \
             f"expected ONE undo entry for drop, got {len(window._parts_undo_stack) - initial_undo_depth}"

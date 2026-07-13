@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import QPropertyAnimation, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QBrush, QFont, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap, QRadialGradient, QRegion
+from PySide6.QtGui import QColor, QBrush, QFont, QFontMetrics, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap, QRadialGradient, QRegion
 from PySide6.QtWidgets import (
     QGraphicsRectItem,
     QGraphicsScene,
@@ -69,6 +69,41 @@ PART_COLOR_PALETTE = (
 
 def _stock_nominal_dimensions(stock: SheetStock) -> tuple[float, float]:
     return stock.nominal_width or stock.width, stock.nominal_height or stock.height
+
+
+def _material_code(material: str) -> str:
+    normalized = str(material or "").upper().replace("-", " ")
+    if normalized.strip() in {"", "STANDARD", "MATERIAŁ", "MATERIAL"}:
+        return ""
+    tokens = normalized.split()
+    if "PE" in normalized and "1000" in normalized:
+        return "PE1000"
+    if "PE" in normalized and "300" in normalized:
+        return "PE300"
+    if "PA6G" in normalized or "PA6 G" in normalized:
+        return "PA6G"
+    if "PA6" in normalized:
+        return "PA6"
+    if "POM" in normalized and "C" in tokens:
+        return "POM-C"
+    if "POM" in normalized and "H" in tokens:
+        return "POM-H"
+    if "POM" in normalized:
+        return "POM"
+    return "MAT"
+
+
+def _material_badge_style(material: str) -> tuple[str, QColor, QColor]:
+    normalized = str(material or "").upper()
+    if "CZARN" in normalized:
+        return _material_code(material), QColor("#202936"), QColor("#f3f7ff")
+    if "ZIELON" in normalized:
+        return _material_code(material), QColor("#188c63"), QColor("#effff8")
+    if "NATUR" in normalized:
+        return _material_code(material), QColor("#ffffff"), QColor("#111827")
+    if "NIEBIESK" in normalized:
+        return _material_code(material), QColor("#2777c9"), QColor("#eff8ff")
+    return _material_code(material), QColor("#4b5f7d"), QColor("#f1f6ff")
 
 
 def _dimension_key(width: float, height: float) -> tuple[float, float]:
@@ -482,13 +517,47 @@ class LayoutView(QGraphicsView):
             self._fit_empty_state()
             return
         self._set_empty_interaction(False)
+        # Show supplemental boards under their matching material/thickness
+        # group instead of collecting every missing board at the end.
+        regular_by_spec: dict[tuple[str, float], list[SheetLayout]] = {}
+        missing_by_spec: dict[tuple[str, float], list[SheetLayout]] = {}
+        spec_order: list[tuple[str, float]] = []
+
+        def spec_key(layout: SheetLayout) -> tuple[str, float]:
+            stock = layout.stock
+            material = str(getattr(stock, "material", "") or "standard").strip().casefold()
+            thickness = round(float(getattr(stock, "thickness", 0.0) or 0.0), 3)
+            return material, thickness
+
+        def collect(
+            layouts: list[SheetLayout],
+            target: dict[tuple[str, float], list[SheetLayout]],
+        ) -> None:
+            for layout in layouts:
+                key = spec_key(layout)
+                if key not in target:
+                    target[key] = []
+                if key not in spec_order:
+                    spec_order.append(key)
+                target[key].append(layout)
+
+        collect(list(result.sheet_layouts or []), regular_by_spec)
+        collect(list(getattr(result, "missing_sheet_layouts", []) or []), missing_by_spec)
+
         y = 32.0
-        if result.sheet_layouts:
-            y = self._draw_sheet_layouts(result.sheet_layouts, y, missing=False)
-        missing_layouts = getattr(result, "missing_sheet_layouts", [])
-        if missing_layouts:
-            y += 8
-            self._draw_sheet_layouts(missing_layouts, y, missing=True)
+        first_section = True
+        for key in spec_order:
+            real_layouts = regular_by_spec.get(key, [])
+            supplemental_layouts = missing_by_spec.get(key, [])
+            if not first_section:
+                y += 8.0
+            if real_layouts:
+                y = self._draw_sheet_layouts(real_layouts, y, missing=False)
+            if supplemental_layouts:
+                if real_layouts:
+                    y += 8.0
+                y = self._draw_sheet_layouts(supplemental_layouts, y, missing=True)
+            first_section = False
         if result.linear_layouts:
             self._draw_linear_layouts(result.linear_layouts)
         self.fit(reset_zoom=True)
@@ -575,11 +644,12 @@ class LayoutView(QGraphicsView):
         item.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
         item.setZValue(-20)
 
-    def _rounded_rect(self, rect: QRectF, radius: float, fill: QColor | QBrush, pen: QPen | None = None) -> None:
+    def _rounded_rect(self, rect: QRectF, radius: float, fill: QColor | QBrush, pen: QPen | None = None):
         path = QPainterPath()
         path.addRoundedRect(rect, radius, radius)
         item = self.scene.addPath(path, pen or QPen(Qt.PenStyle.NoPen), fill if isinstance(fill, QBrush) else QBrush(fill))
         item.setZValue(-10)
+        return item
 
 
     def _draw_technical_grid(self, rect: QRectF) -> None:
@@ -621,6 +691,17 @@ class LayoutView(QGraphicsView):
         item = self._draw_label(text, 0, y, size, color)
         item.setPos(right_x - item.boundingRect().width(), y)
 
+    @staticmethod
+    def _elided_label_text(text: str, size: int, max_width: float, bold: bool = False) -> str:
+        font = QFont("Segoe UI")
+        font.setPointSize(size)
+        font.setBold(bold)
+        return QFontMetrics(font).elidedText(
+            text,
+            Qt.TextElideMode.ElideRight,
+            max(1, int(max_width)),
+        )
+
     def _symbol_from_index(self, index: int) -> str:
         alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
         if index < len(alphabet):
@@ -657,22 +738,25 @@ class LayoutView(QGraphicsView):
 
         if rw < 2 or rh < 2:
             return
+
+        # Print mode: black text, symbol only (no dimensions).
+        label_color = QColor("#000000") if self.print_mode else color
+
         if rw < 5 or rh < 5:
             dot = self.scene.addEllipse(
                 rect.rect().center().x() - 1.5,
                 rect.rect().center().y() - 1.5,
                 3, 3,
                 QPen(Qt.PenStyle.NoPen),
-                QBrush(color),
+                QBrush(label_color),
             )
             dot.setParentItem(rect)
             return
 
-        # Portrait = tall and narrow → rotate text −90° so it reads along the long axis.
-        # Landscape = wide → text horizontal at the bottom.
+        # Dimensions are present in print/export too.  The black label colour
+        # above keeps that version legible without changing its geometry.
         is_portrait = rh > rw
 
-        # ── Dimension text ───────────────────────────────────────────────────
         dim_item = QGraphicsTextItem()
         self.scene.addItem(dim_item)
         dim_item.setParentItem(rect)
@@ -686,51 +770,53 @@ class LayoutView(QGraphicsView):
         dim_item.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
         db = dim_item.boundingRect()
 
+        sym_avail_h = rh
+        sym_avail_w = rw
+        scene_w = 0.0
+        scene_h = 0.0
+        margin = min(min(rw, rh) * 0.05, 8.0)
+
         if db.width() > 0 and db.height() > 0:
             if is_portrait:
-                # After rotation −90° in Qt scene coordinates:
-                #   text width  (db.width)  → maps to scene Y (vertical extent)
-                #   text height (db.height) → maps to scene X (horizontal extent)
-                # Target: text-height-in-scene = min(rw * 0.85, 48)
-                #         text-length-in-scene ≤ rh * 0.88
-                target_scene_x = min(rw * 0.85, 48.0)   # db.height * scale
-                target_scene_y = rh * 0.88               # db.width  * scale
+                target_scene_x = min(rw * 0.42, 18.0)
+                target_scene_y = rh * 0.82
                 dim_scale = max(0.04, min(
                     target_scene_x / db.height(),
                     target_scene_y / db.width(),
                 ))
                 dim_item.setRotation(-90)
                 dim_item.setScale(dim_scale)
-                # With rot=-90 and origin at (0,0):
-                #   scene x range: [px, px + db.height()*scale]
-                #   scene y range: [py - db.width()*scale, py]
-                scene_w = db.height() * dim_scale   # horizontal footprint
-                scene_h = db.width()  * dim_scale   # vertical footprint (length)
-                margin  = rh * 0.02
-                px = rx + (rw - scene_w) / 2
-                py = ry + rh - margin                # bottom anchor
+                scene_w = db.height() * dim_scale
+                scene_h = db.width()  * dim_scale
+                margin  = min(rh * 0.05, 8.0)
+                px = rx + rw - margin - scene_w
+                py = ry + rh - margin
                 dim_item.setPos(px, py)
-                # Symbol goes in the upper portion (above text block)
-                sym_avail_h = rh - scene_h - margin - rh * 0.04
+                sym_avail_h = rh - scene_h - margin * 2
                 sym_avail_w = rw
             else:
-                # Horizontal text at bottom
-                target_h = min(rh * 0.85, 48.0)
+                target_h = min(rh * 0.24, 20.0)
                 dim_scale = max(0.04, min(
                     target_h / db.height(),
-                    rw * 0.88 / db.width(),
+                    rw * 0.8 / db.width(),
                 ))
                 dim_item.setScale(dim_scale)
-                margin = rh * 0.02
+                margin = min(rh * 0.05, 8.0)
+                scene_w = db.width() * dim_scale
+                scene_h = db.height() * dim_scale
                 dim_item.setPos(
-                    rx + (rw - db.width() * dim_scale) / 2,
-                    ry + rh - db.height() * dim_scale - margin,
+                    rx + rw - scene_w - margin,
+                    ry + rh - scene_h - margin,
                 )
-                sym_avail_h = rh - db.height() * dim_scale - margin - rh * 0.04
+                sym_avail_h = rh - scene_h - margin * 2
                 sym_avail_w = rw
 
-        # ── Symbol letter — centered in the space above the dimension text ──
-        if db.width() > 0 and db.height() > 0 and sym_avail_h > rh * 0.12:
+        # The dimension wins on dense layouts.  A symbol is added only when
+        # there is a separate cross-axis lane for it, never on top of the
+        # dimension anchored at the lower-right end of the long edge.
+        symbol_lane = (rw if is_portrait else rh) - (scene_w if is_portrait else scene_h) - margin * 2
+        show_symbol = bool(symbol) and symbol_lane >= max(12.0, (rw if is_portrait else rh) * 0.30)
+        if db.width() > 0 and db.height() > 0 and show_symbol:
             sym_item = QGraphicsTextItem()
             self.scene.addItem(sym_item)
             sym_item.setParentItem(rect)
@@ -744,15 +830,31 @@ class LayoutView(QGraphicsView):
             sym_item.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
             sb = sym_item.boundingRect()
             if sb.width() > 0 and sb.height() > 0:
+                if is_portrait:
+                    sym_scale = max(0.04, min(
+                        rh * 0.56 / sb.width(),
+                        symbol_lane * 0.72 / sb.height(),
+                        1.2,
+                    ))
+                    sym_item.setRotation(-90)
+                    rotated_w = sb.height() * sym_scale
+                    rotated_h = sb.width() * sym_scale
+                    sym_item.setScale(sym_scale)
+                    sym_item.setPos(
+                        rx + max(margin, (symbol_lane - rotated_w) / 2),
+                        ry + (rh + rotated_h) / 2,
+                    )
+                    return
                 sym_scale = max(0.04, min(
-                    sym_avail_h * 0.72 / sb.height(),
-                    sym_avail_w * 0.60 / sb.width(),
-                    2.4,
+                    min(sym_avail_h * 0.6, rh * 0.3) / sb.height(),
+                    sym_avail_w * 0.6 / sb.width(),
+                    1.2,
                 ))
                 sym_item.setScale(sym_scale)
+                margin = min(rh * 0.05, 8.0)
                 sym_item.setPos(
                     rx + (rw - sb.width() * sym_scale) / 2,
-                    ry + (sym_avail_h - sb.height() * sym_scale) / 2,
+                    ry + max(margin, (sym_avail_h - sb.height() * sym_scale) / 2),
                 )
 
     def _legend_entries(self, layout: SheetLayout, missing: bool = False) -> list[tuple[str, tuple[float, float], int, QColor]]:
@@ -1075,22 +1177,23 @@ class LayoutView(QGraphicsView):
                 self.scene.addLine(base_x - inner_tick, iy, base_x + inner_tick, iy, inner).setAcceptedMouseButtons(no)
         center_y = (y1 + y2) / 2
         label = self._draw_label(label_text, 0, 0, 6, txt, bold=True)
+        label.setRotation(-90)
         lr = label.boundingRect()
         if order:
             br = max(7.0, 4.8 + len(str(order)) * 2.3)
             if label_left:
                 badge_cx = base_x - br - 4
                 self._draw_cut_order_badge(badge_cx, center_y, order)
-                label.setPos(badge_cx - br - 2 - lr.width(), center_y - lr.height() / 2)
+                label.setPos(badge_cx - br - 2 - lr.height(), center_y + lr.width() / 2)
             else:
                 badge_cx = base_x + br + 4
                 self._draw_cut_order_badge(badge_cx, center_y, order)
-                label.setPos(badge_cx + br + 2, center_y - lr.height() / 2)
+                label.setPos(badge_cx + br + 2, center_y + lr.width() / 2)
         else:
             if label_left:
-                label.setPos(base_x - 5 - lr.width(), center_y - lr.height() / 2)
+                label.setPos(base_x - 5 - lr.height(), center_y + lr.width() / 2)
             else:
-                label.setPos(base_x + 5, center_y - lr.height() / 2)
+                label.setPos(base_x + 5, center_y + lr.width() / 2)
         label.setAcceptedMouseButtons(no)
 
     def _draw_cut_strips_all_sides(self, layout: SheetLayout, sheet_rect: QRectF, scale: float) -> None:
@@ -1106,52 +1209,46 @@ class LayoutView(QGraphicsView):
         hbands = self._compute_horizontal_bands(layout)  # cross-cuts (heights)
         left, top = sheet_rect.left(), sheet_rect.top()
 
-        # TOP — rip order
-        order = 0
+        # TOP — rip sizes
         for g in vbands:
             x1, x2 = left + g["start"] * scale, left + g["end"] * scale
             if x2 - x1 < 14:
                 continue
-            order += 1
-            self._bracket_h(x1, x2, top - 12, int(g["n"]), bool(g["uniform"]),
-                            self._band_label(g), f"1.{order}", txt, pen, inner, label_above=True)
+            self._bracket_h(x1, x2, top - 18, int(g["n"]), bool(g["uniform"]),
+                            self._band_label(g), 0, txt, pen, inner, label_above=True)
         # BOTTOM — rip sizes mirrored
         for g in vbands:
             x1, x2 = left + g["start"] * scale, left + g["end"] * scale
             if x2 - x1 < 14:
                 continue
-            self._bracket_h(x1, x2, sheet_rect.bottom() + 12, int(g["n"]), bool(g["uniform"]),
+            self._bracket_h(x1, x2, sheet_rect.bottom() + 18, int(g["n"]), bool(g["uniform"]),
                             self._band_label(g), 0, txt, pen, inner, label_above=False)
-        # LEFT — cross-cut order
-        order = 0
+        # LEFT — cross-cut sizes
         for g in hbands:
             y1, y2 = top + g["start"] * scale, top + g["end"] * scale
             if y2 - y1 < 14:
                 continue
-            order += 1
-            self._bracket_v(y1, y2, left - 12, int(g["n"]), bool(g["uniform"]),
-                            self._band_label(g), f"2.{order}", txt, pen, inner, label_left=True)
+            self._bracket_v(y1, y2, left - 18, int(g["n"]), bool(g["uniform"]),
+                            self._band_label(g), 0, txt, pen, inner, label_left=True)
         # RIGHT — cross-cut sizes mirrored
         for g in hbands:
             y1, y2 = top + g["start"] * scale, top + g["end"] * scale
             if y2 - y1 < 14:
                 continue
-            self._bracket_v(y1, y2, sheet_rect.right() + 12, int(g["n"]), bool(g["uniform"]),
+            self._bracket_v(y1, y2, sheet_rect.right() + 18, int(g["n"]), bool(g["uniform"]),
                             self._band_label(g), 0, txt, pen, inner, label_left=False)
 
     def _draw_long_side_rotated(self, layout, sheet_rect, scale, groups, pen, tick_pen, inner_pen, text_color, tick, inner_tick) -> None:
         """Long-side rip bracket for the rotated (vertical) display — drawn on the left edge."""
         no_btn = Qt.MouseButton.NoButton
         sw = layout.stock.width
-        bracket_x = sheet_rect.left() - 13
-        order = 0
+        bracket_x = sheet_rect.left() - 18
         for group in groups:
             # layout X [start, end] -> display Y [sw - end, sw - start]
             y_top = sheet_rect.top() + (sw - group["end"]) * scale
             y_bot = sheet_rect.top() + (sw - group["start"]) * scale
             if y_bot - y_top < 14:
                 continue
-            order += 1
             count = int(group["n"])
             uniform = bool(group["uniform"])
             center_y = (y_top + y_bot) / 2
@@ -1169,11 +1266,7 @@ class LayoutView(QGraphicsView):
             label_text = f"{count} × {group['w']:.0f} mm" if (uniform and count > 1) else f"{group['total']:.0f} mm"
             label = self._draw_label(label_text, 0, 0, 6, text_color, bold=True)
             lr = label.boundingRect()
-            order_label = f"1.{order}"
-            br = max(7.0, 4.8 + len(order_label) * 2.3)
-            badge_cx = bracket_x - br - 4
-            self._draw_cut_order_badge(badge_cx, center_y, order_label)
-            label.setPos(badge_cx - br - 2 - lr.width(), center_y - lr.height() / 2)
+            label.setPos(bracket_x - 5 - lr.width(), center_y - lr.height() / 2)
             label.setAcceptedMouseButtons(no_btn)
 
     def _draw_short_side_rotated(self, layout, sheet_rect, scale, groups, pen, tick_pen, inner_pen, text_color, tick, inner_tick) -> None:
@@ -1240,13 +1333,11 @@ class LayoutView(QGraphicsView):
             return
 
         bottom_y = sheet_rect.bottom() + 13
-        order = 0
         for group in groups:
             x1 = sheet_rect.left() + group["start"] * scale
             x2 = sheet_rect.left() + group["end"] * scale
             if x2 - x1 < 14:
                 continue
-            order += 1
             count = int(group["n"])
             uniform = bool(group["uniform"])
             center_x = (x1 + x2) / 2
@@ -1269,20 +1360,12 @@ class LayoutView(QGraphicsView):
                 label_text = f"{count} × {group['w']:.0f} mm"
             else:
                 label_text = f"{group['total']:.0f} mm"
-            # Draw the cut-order badge and the measurement as one centred unit:
-            # [①] gap [N × W mm].  The badge therefore sits a fixed distance to
-            # the left of its own label for every strip — never scattered, never
-            # overlapping.
+            # Draw the measurement label centred
             label = self._draw_label(label_text, 0, 0, 6, text_color, bold=True)
             lr = label.boundingRect()
-            order_label = f"1.{order}"
-            badge_radius = max(7.0, 4.8 + len(order_label) * 2.3)
-            gap = 5.0
-            unit_left = center_x - (badge_radius * 2 + gap + lr.width()) / 2
             base_y = bottom_y + 4
-            label.setPos(unit_left + badge_radius * 2 + gap, base_y)
+            label.setPos(center_x - lr.width() / 2, base_y)
             label.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
-            self._draw_cut_order_badge(unit_left + badge_radius, base_y + lr.height() / 2, order_label)
 
     def _draw_short_side_dimensioning(self, layout: SheetLayout, sheet_rect: QRectF, scale: float, display_rotated: bool) -> None:
         """Dimension the main horizontal cross-cuts on the short (left) side.
@@ -1384,18 +1467,27 @@ class LayoutView(QGraphicsView):
         gradient.setColorAt(1, end)
         return QBrush(gradient)
 
-    def _display_sheet_geometry(self, layout: SheetLayout, consumed_only: bool = False) -> tuple[float, float, bool]:
+    def _display_sheet_geometry(self, layout: SheetLayout, consumed_only: bool = False) -> tuple[float, float, bool, bool]:
         stock_w = layout.stock.width
         stock_h = layout.stock.height
-        if consumed_only and layout.parts:
-            return min(stock_w, max(layout.used_width, 1.0)), stock_h, False
+
+        # Rotation is decided on original stock dimensions (not the trimmed fragment).
         if self.display_orientation == "vertical":
             rotate = stock_w > stock_h
         else:
             rotate = stock_h > stock_w
+
+        # For missing/virtual sheets use only the consumed fragment.
+        cutoff = False
+        if consumed_only and layout.parts:
+            used_w = layout.used_width
+            if 0 < used_w < stock_w - 1:
+                stock_w = used_w
+                cutoff = True
+
         if rotate:
-            return stock_h, stock_w, True
-        return stock_w, stock_h, False
+            return stock_h, stock_w, True, cutoff
+        return stock_w, stock_h, False, cutoff
 
     def _map_rect_to_display(
         self,
@@ -1405,12 +1497,12 @@ class LayoutView(QGraphicsView):
     ) -> tuple[float, float, float, float]:
         x, y, width, height = rect
         if display_rotated is None:
-            _, _, rotate = self._display_sheet_geometry(layout)
+            _, _, rotate, _ = self._display_sheet_geometry(layout)
         else:
             rotate = display_rotated
         if not rotate:
             return x, y, width, height
-        return y, layout.stock.width - x - width, height, width
+        return y, x, height, width
 
     def _map_point_to_display(
         self,
@@ -1421,7 +1513,7 @@ class LayoutView(QGraphicsView):
     ) -> tuple[float, float]:
         if not display_rotated:
             return x, y
-        return y, layout.stock.width - x
+        return y, x
 
     def _draw_cut_operations_overlay(
         self,
@@ -1430,6 +1522,7 @@ class LayoutView(QGraphicsView):
         scale: float,
         display_rotated: bool,
     ) -> None:
+        return  # CUT SEQUENCES DISABLED TEMPORARILY
         operations = sorted(getattr(layout, "cut_operations", []) or [], key=lambda op: int(getattr(op, "step", 0)))
         if not operations:
             return
@@ -1471,7 +1564,8 @@ class LayoutView(QGraphicsView):
             line.setAcceptedMouseButtons(no_btn)
             mid_x = (x1 + x2) / 2
             mid_y = (y1 + y2) / 2
-            self._draw_cut_order_badge(mid_x, mid_y, int(getattr(op, "step", 0) or 0))
+            if len(operations) <= 50:
+                self._draw_cut_order_badge(mid_x, mid_y, int(getattr(op, "step", 0) or 0))
 
     def _stock_tooltip(self, layout: SheetLayout, missing: bool) -> str:
         nominal_width, nominal_height = _stock_nominal_dimensions(layout.stock)
@@ -1496,14 +1590,23 @@ class LayoutView(QGraphicsView):
             layout = group.representative
             group_count = group.count
             group_label = (getattr(layout, "group_label", "") or "").strip()
-            base_label = (
-                f"Brakująca {layout.sheet_index}" if missing else f"Płyta {layout.sheet_index}"
-            )
-            nav_label = base_label + (f" ×{group_count}" if group_count > 1 else "")
-            if group_label:
+            sheet_numbers = [str(value) for value in getattr(group, "display_sheet_indices", [])] or [str(getattr(layout, "display_sheet_index", layout.sheet_index))]
+            if len(sheet_numbers) == 1:
+                number_text = sheet_numbers[0]
+            elif len(sheet_numbers) == 2:
+                number_text = f"{sheet_numbers[0]} i {sheet_numbers[1]}"
+            else:
+                number_text = ", ".join(sheet_numbers[:-1]) + f" i {sheet_numbers[-1]}"
+            thickness = float(getattr(layout.stock, "thickness", 0.0) or 0.0)
+            material = str(getattr(layout.stock, "material", "") or group_label or "Materiał").strip()
+            base_label = f"{material} · gr. {thickness:g} mm · nr {number_text}"
+            if missing:
+                base_label = "Brakująca " + base_label.lower()
+            nav_label = base_label
+            if group_label and group_label.casefold() != material.casefold():
                 nav_label += f" · {group_label}"
             self._nav_labels.append(nav_label)
-            display_w, display_h, display_rotated = self._display_sheet_geometry(layout, consumed_only=missing)
+            display_w, display_h, display_rotated, cutoff = self._display_sheet_geometry(layout, consumed_only=missing)
             sheet_w = display_w * scale
             sheet_h = display_h * scale
             legend_entries = self._legend_entries(layout, missing)
@@ -1512,21 +1615,21 @@ class LayoutView(QGraphicsView):
             # we reserve margins around the sheet for them.  The rotated view uses
             # its own (swapped-axis) strips and the older, tighter margins.
             if display_rotated:
-                dimension_left_margin = 64.0
+                dimension_left_margin = 20.0
                 dimension_top_margin = 20.0
-                dimension_bottom_margin = 40.0
+                dimension_bottom_margin = 30.0
                 dimension_right_margin = 0.0
             else:
-                dimension_left_margin = 72.0   # left cross-cut strip + order badge
-                dimension_top_margin = 34.0    # top rip strip + order badge
-                dimension_bottom_margin = 40.0  # bottom size mirror
-                dimension_right_margin = 70.0  # right size mirror
+                dimension_left_margin = 8.0    # minimal left margin
+                dimension_top_margin = 20.0    # top dimension line
+                dimension_bottom_margin = 30.0  # bottom size labels
+                dimension_right_margin = 8.0   # minimal right margin
             preview_card_w = max(sheet_w + 36 + dimension_left_margin + dimension_right_margin, 720)
             legend_cols = max(1, int((preview_card_w - 36) // (190.0 if self.print_mode else 210.0)))
             legend_rows = (len(legend_entries) + legend_cols - 1) // legend_cols if legend_entries else 0
             legend_h = 0 if not legend_entries else 32 + legend_rows * 24
             card_w = max(sheet_w + 36 + dimension_left_margin + dimension_right_margin, 720)
-            card_h = sheet_h + 92 + legend_h + dimension_top_margin + dimension_bottom_margin
+            card_h = sheet_h + 138 + legend_h + dimension_top_margin + dimension_bottom_margin
             card_rect = QRectF(x, y, card_w, card_h)
             # Record card bounds for sheet navigation (T1-3) and auto-focus (T1-5).
             self._sheet_card_bounds.append(QRectF(card_rect))
@@ -1549,23 +1652,41 @@ class LayoutView(QGraphicsView):
             self._rounded_rect(card_rect, 8, card_fill, QPen(pen_color, 1.0))
             self._draw_technical_grid(card_rect)
 
-            title = f"Brakująca płyta {layout.sheet_index}" if missing else f"Płyta {layout.sheet_index}"
-            if group_label:
+            title = base_label
+            if group_label and group_label.casefold() != material.casefold():
                 title += f" · {group_label}"
             title_color = QColor(str(palette["danger"])) if missing else QColor(str(palette["text"]))
             title_item = self._draw_label(title, x + 18, y + 13, 11, title_color, bold=True)
-            if group_count > 1:
-                # ×N count badge — identical boards collapsed into one card.
-                badge_cx = x + 18 + title_item.boundingRect().width() + 18
-                self._draw_multiplier_badge(badge_cx, y + 13 + 8, group_count, missing)
+            badge_code, badge_background, badge_foreground = _material_badge_style(material)
+            display_label = f"Wymiary: {display_w:.2f} x {display_h:.2f} mm"
+            display_font = QFont("Segoe UI")
+            display_font.setPointSize(10)
+            display_width = QFontMetrics(display_font).horizontalAdvance(display_label)
+            badge_width = max(38, len(badge_code) * 7 + 12) if badge_code else 0
+            title_available = card_w - 36 - display_width - 24 - badge_width
+            title_item.setPlainText(
+                self._elided_label_text(title, 11, max(120.0, title_available), bold=True)
+            )
+            if badge_code:
+                badge_x = x + 24 + title_item.boundingRect().width()
+                badge_rect = QRectF(badge_x, y + 10, badge_width, 20)
+                badge_shape = self._rounded_rect(
+                    badge_rect,
+                    6,
+                    QBrush(badge_background),
+                    QPen(QColor(255, 255, 255, 48), 0.8),
+                )
+                badge_shape.setZValue(1)
+                badge_item = self._draw_label(badge_code, badge_x, y + 13, 8, badge_foreground, bold=True)
+                badge_item.setPos(badge_x + (badge_rect.width() - badge_item.boundingRect().width()) / 2, y + 13)
+                badge_item.setZValue(2)
             # Centered "Wykorzystanie" label — independent of title length, so it
             # never overlaps the (longer) "Brakująca płyta N" header.
             util_color = QColor(str(palette["danger"])) if missing else QColor(str(palette["success"]))
             util_text = f"Wykorzystanie: {layout.utilization:.1f}%"
-            util_item = self._draw_label(util_text, 0, y + 13, 10, util_color, bold=True)
+            util_item = self._draw_label(util_text, 0, y + 38, 10, util_color, bold=True)
             util_w = util_item.boundingRect().width()
-            util_item.setPos(x + (card_w - util_w) / 2, y + 13)
-            display_label = f"Wymiary: {display_w:.2f} x {display_h:.2f} mm"
+            util_item.setPos(x + (card_w - util_w) / 2, y + 38)
             self._draw_right_label(
                 display_label,
                 x + card_w - 18,
@@ -1574,13 +1695,20 @@ class LayoutView(QGraphicsView):
                 QColor(str(palette["muted"])),
             )
 
-            sheet_x = x + 18 + dimension_left_margin
-            sheet_y = y + 48 + dimension_top_margin
+            sheet_x = x + 6
+            sheet_y = y + 88
             sheet_rect = QRectF(sheet_x, sheet_y, sheet_w, sheet_h)
-            sheet_brush = QLinearGradient(sheet_rect.topLeft(), sheet_rect.bottomRight())
-            sheet_brush.setColorAt(0.0, QColor(28, 52, 84, 245))
-            sheet_brush.setColorAt(1.0, QColor(15, 31, 55, 245))
-            sheet_item = self.scene.addRect(sheet_rect, QPen(QColor(str(palette["sheet_pen"])), 1.1), QBrush(sheet_brush) if not self.print_mode and self.theme == "dark" else QColor(str(palette["sheet"])))
+            if self.print_mode:
+                sheet_brush = QBrush(QColor("#ffffff"))
+            else:
+                sheet_brush = QBrush(QColor(str(palette["sheet"])))
+            sheet_item = self._rounded_rect(
+                sheet_rect,
+                6,
+                sheet_brush,
+                QPen(QColor(str(palette["sheet_pen"])), 1.1),
+            )
+            sheet_item.setZValue(0)
             sheet_item.setToolTip(self._stock_tooltip(layout, missing))
             sheet_item.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
             if display_rotated:
@@ -1588,9 +1716,11 @@ class LayoutView(QGraphicsView):
                 self._draw_segment_dimensioning(layout, sheet_rect, scale, display_rotated)
                 self._draw_short_side_dimensioning(layout, sheet_rect, scale, display_rotated)
             else:
-                # Cut-order + size strips on all four sides (top/left carry the
-                # numbered cutting order; right/bottom mirror the sizes).
-                self._draw_cut_strips_all_sides(layout, sheet_rect, scale)
+                # Cut strips (boxes) disabled per user request, but keep the simple
+                # dimension lines (brackets) around the board.
+                self._draw_dimensioning(sheet_rect, display_w, display_h)
+                self._draw_segment_dimensioning(layout, sheet_rect, scale, display_rotated)
+                self._draw_short_side_dimensioning(layout, sheet_rect, scale, display_rotated)
 
             for ox, oy, ow, oh in layout.offcuts:
                 if missing:
@@ -1653,11 +1783,12 @@ class LayoutView(QGraphicsView):
                 rect_w = dw * scale
                 rect_h = dh * scale
                 _, _, border = self._part_colors(part.part.width, part.part.height, missing)
+                if self.print_mode:
+                    border = QColor("#000000")
                 rect = QGraphicsRectItem(rect_x, rect_y, rect_w, rect_h)
                 is_bonus = getattr(part.part, "is_waste_fill", False)
                 rect.setBrush(self._part_brush(rect_x, rect_y, rect_w, rect_h, part.part.width, part.part.height, missing))
                 if is_bonus:
-                    # Dashed border signals a bonus waste-fill cut (not a required BOM part)
                     bonus_pen = QPen(border, 1.2, Qt.PenStyle.DashLine)
                     rect.setPen(bonus_pen)
                 else:

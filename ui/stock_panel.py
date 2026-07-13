@@ -61,6 +61,19 @@ class EditableTable(QTableWidget):
         QShortcut(QKeySequence.StandardKey.Copy, self, self.copy)
         self.horizontalHeader().setStretchLastSection(True)
 
+    def keyPressEvent(self, event) -> None:
+        if event.key() == Qt.Key.Key_Tab:
+            row = self.currentRow()
+            col = self.currentColumn()
+            if row == self.rowCount() - 1 and 0 <= col < len(self.headers):
+                if self.headers[col] == "quantity":
+                    # Add new row with defaults, but maybe keep material/thickness from current row?
+                    # Let's just use defaults for now.
+                    self.add_row()
+                    self.setCurrentCell(self.rowCount() - 1, 0)
+                    return
+        super().keyPressEvent(event)
+
     def add_row(self, values: list[Any] | None = None) -> None:
         self.setSortingEnabled(False)
         row = self.rowCount()
