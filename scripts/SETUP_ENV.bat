@@ -1,5 +1,5 @@
 @echo off
-setlocal
+setlocal EnableDelayedExpansion
 
 set "ROOT_DIR=%~dp0.."
 cd /d "%ROOT_DIR%"
@@ -12,7 +12,7 @@ if not exist "%VENV_PY%" (
     call :find_python
     if errorlevel 1 goto :python_missing
 
-    %PYTHON_CMD% -m venv "%VENV_DIR%"
+    !PYTHON_CMD! -m venv "%VENV_DIR%"
     if errorlevel 1 goto :venv_failed
 )
 
