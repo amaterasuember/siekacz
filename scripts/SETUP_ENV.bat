@@ -26,7 +26,7 @@ exit /b 0
 if defined SIEKACZ_PYTHON (
     "%SIEKACZ_PYTHON%" -c "import sys" >nul 2>nul
     if not errorlevel 1 (
-        set "PYTHON_CMD=\"%SIEKACZ_PYTHON%\""
+        set PYTHON_CMD="%SIEKACZ_PYTHON%"
         exit /b 0
     )
 )
