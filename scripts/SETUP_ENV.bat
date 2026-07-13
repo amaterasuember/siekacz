@@ -23,6 +23,14 @@ if errorlevel 1 goto :install_failed
 exit /b 0
 
 :find_python
+if defined SIEKACZ_PYTHON (
+    "%SIEKACZ_PYTHON%" -c "import sys" >nul 2>nul
+    if not errorlevel 1 (
+        set "PYTHON_CMD=\"%SIEKACZ_PYTHON%\""
+        exit /b 0
+    )
+)
+
 py -3.14 -c "import sys" >nul 2>nul
 if not errorlevel 1 (
     set "PYTHON_CMD=py -3.14"

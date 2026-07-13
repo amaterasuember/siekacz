@@ -41,6 +41,7 @@ jobs:
         shell: cmd
         env:
           SIEKACZ_NO_PAUSE: "1"
+          SIEKACZ_PYTHON: ${{ env.pythonLocation }}\python.exe
         run: scripts\BUILD_INSTALLER.bat
 
       - name: Upload build artifact
