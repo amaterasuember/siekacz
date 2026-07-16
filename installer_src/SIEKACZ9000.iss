@@ -1,12 +1,19 @@
 #define MyAppName "SIEKACZ 9000"
 #define MyAppExeName "SIEKACZ9000.exe"
-#define MyAppVersion "3.1.1"
+#ifndef MyAppVersion
+  #define MyAppVersion "0.0.0"
+#endif
+#ifndef MyAppFileVersion
+  #define MyAppFileVersion "0.0.0.0"
+#endif
 #define MyAppPublisher "Kewin"
 
 [Setup]
 AppId={{C3B16626-EC6F-4AC9-97C9-7DA3B5F2F12B}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
+VersionInfoVersion={#MyAppFileVersion}
+VersionInfoProductVersion={#MyAppFileVersion}
 AppPublisher={#MyAppPublisher}
 DefaultDirName={localappdata}\Programs\{#MyAppName}
 DefaultGroupName={#MyAppName}

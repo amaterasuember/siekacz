@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -41,7 +42,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from PySide6.QtWidgets import QApplication
 
-from app.simple_window import SimpleCutWindow
+from app.simple_window import PdfPreviewDialog, SimpleCutWindow, _polish_sheet_count
 from core.models import (
     OptimizationSettings,
     OptimizationResult,
@@ -178,6 +179,43 @@ def test_worker_finished_always_stops_overlay() -> None:
     print("[OK] _calculation_worker_finished always stops the overlay")
 
 
+def test_pdf_preview_exposes_later_report_pages_and_zoom() -> None:
+    """The in-app preview must expose cutting pages after the title page."""
+    from reportlab.pdfgen.canvas import Canvas
+    from PySide6.QtPdfWidgets import QPdfView
+
+    _app()
+    path = Path(tempfile.gettempdir()) / "siekacz_pdf_preview_regression.pdf"
+    canvas = Canvas(str(path))
+    canvas.drawString(72, 720, "Strona tytulowa")
+    canvas.showPage()
+    canvas.drawString(72, 720, "Rozkroj plyty")
+    canvas.save()
+
+    dialog = PdfPreviewDialog(path)
+    try:
+        assert dialog._document.pageCount() == 2
+        assert dialog._view.pageMode() == QPdfView.PageMode.MultiPage
+        dialog._change_zoom(1.2)
+        dialog._change_page(1)
+        assert dialog._view.pageNavigator().currentPage() == 1
+        print("[OK] PDF preview exposes later pages and supports zoom")
+    finally:
+        dialog.close()
+
+
+def test_polish_sheet_count_uses_correct_plural_forms() -> None:
+    assert _polish_sheet_count(1) == "1 płyta"
+    assert _polish_sheet_count(2) == "2 płyty"
+    assert _polish_sheet_count(9) == "9 płyt"
+    assert _polish_sheet_count(12) == "12 płyt"
+    assert _polish_sheet_count(24) == "24 płyty"
+    assert _polish_sheet_count(1, missing=True) == "1 brakująca płyta"
+    assert _polish_sheet_count(3, missing=True) == "3 brakujące płyty"
+    assert _polish_sheet_count(15, missing=True) == "15 brakujących płyt"
+    print("[OK] Polish board-count notifications use correct forms")
+
+
 def _columns_layout(count: int, part_w: float, part_h: float, kerf: float = 5.0) -> SheetLayout:
     """A layout of *count* identical full-height columns separated by kerf."""
     stock = SheetStock("standard", 1, 2000, 1000, 1, allow_rotation=True,
@@ -202,6 +240,23 @@ def test_vertical_bands_group_identical_columns() -> None:
         assert groups[0]["n"] == 7, groups
         assert abs(groups[0]["w"] - 40) < 0.6, groups
         print("[OK] vertical bands group 7 identical columns into 7 × 40")
+    finally:
+        view.deleteLater()
+
+
+def test_multiple_bands_report_one_total_cut_span() -> None:
+    """Three band labels collapse into one final cut-width summary."""
+    _app()
+    view = LayoutView()
+    try:
+        groups = [
+            {"start": 0.0, "end": 112.0},
+            {"start": 112.0, "end": 274.0},
+            {"start": 274.0, "end": 396.0},
+        ]
+        assert view._shows_total_cut_span(groups)
+        assert view._total_cut_span_label(groups) == "396 mm"
+        print("[OK] multiple bands report one total occupied cut span")
     finally:
         view.deleteLater()
 
@@ -295,7 +350,10 @@ if __name__ == "__main__":
     test_apply_result_with_missing_sheets_does_not_crash()
     test_missing_sheets_follow_the_matching_material_and_thickness_group()
     test_worker_finished_always_stops_overlay()
+    test_pdf_preview_exposes_later_report_pages_and_zoom()
+    test_polish_sheet_count_uses_correct_plural_forms()
     test_vertical_bands_group_identical_columns()
+    test_multiple_bands_report_one_total_cut_span()
     test_vertical_bands_separate_distinct_widths()
     test_horizontal_bands_group_clean_rows()
     test_vertical_bands_same_formatka_is_one_block()

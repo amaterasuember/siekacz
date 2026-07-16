@@ -13,7 +13,10 @@ to run off the UI thread (see :class:`UpdateCheckWorker`).
 
 import json
 import logging
+import os
 import ssl
+import subprocess
+import sys
 import tempfile
 import urllib.request
 from dataclasses import dataclass
@@ -28,8 +31,9 @@ _logger = logging.getLogger(__name__)
 # ── Configure these for your repository ───────────────────────────────────────
 GITHUB_OWNER = "amaterasuember"
 GITHUB_REPO = "siekacz"
-# Installer assets are matched in order, first match wins.
-ASSET_SUFFIXES = ("_Setup.exe", ".msi", ".exe", ".zip")
+GENERIC_INSTALLER_NAME = "SIEKACZ9000_Setup.exe"
+VERSIONED_INSTALLER_PREFIX = "SIEKACZ9000_Setup_"
+ASSET_SUFFIXES = (".exe", ".msi", ".zip")
 
 _API_URL = "https://api.github.com/repos/{owner}/{repo}/releases/latest"
 _TIMEOUT_S = 8
@@ -68,6 +72,58 @@ def is_configured() -> bool:
     return GITHUB_OWNER != "your-github-user" and bool(GITHUB_REPO)
 
 
+def windows_file_version(version: str) -> str:
+    """Convert an app version such as 3.1.8-beta to Windows' 3.1.8.0."""
+    parts = list(_parse_version(version))
+    return ".".join(str(value) for value in (parts + [0, 0, 0, 0])[:4])
+
+
+def expected_installer_name(tag: str) -> str:
+    clean_tag = str(tag or "").strip().lstrip("vV")
+    return f"{VERSIONED_INSTALLER_PREFIX}v{clean_tag}.exe"
+
+
+def installer_product_version(path: str | Path) -> str:
+    """Read ProductVersion from a Windows executable without extra packages."""
+    installer = Path(path)
+    if not installer.is_file():
+        raise ValueError(f"Nie znaleziono instalatora: {installer}")
+    if not sys.platform.startswith("win"):
+        return ""
+    env = os.environ.copy()
+    env["SIEKACZ_INSTALLER_TO_CHECK"] = str(installer)
+    command = (
+        "$item = Get-Item -LiteralPath $env:SIEKACZ_INSTALLER_TO_CHECK; "
+        "[Console]::Write(($item.VersionInfo.ProductVersion | Out-String).Trim())"
+    )
+    completed = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        env=env,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip()
+        raise ValueError(f"Nie udało się sprawdzić wersji instalatora. {detail}")
+    return completed.stdout.strip()
+
+
+def validate_installer_version(path: str | Path, release_version: str) -> None:
+    """Reject stale or incorrectly labelled release installers."""
+    if not sys.platform.startswith("win"):
+        return
+    actual = installer_product_version(path)
+    expected = windows_file_version(release_version)
+    if _parse_version(actual) != _parse_version(expected):
+        raise ValueError(
+            "Pobrany instalator ma inną wersję niż wydanie GitHub. "
+            f"Wydanie: {release_version}, instalator: {actual or 'brak wersji'}. "
+            "Aktualizacja została zatrzymana, żeby nie zainstalować starej wersji."
+        )
+
+
 def fetch_latest_release(owner: str = GITHUB_OWNER, repo: str = GITHUB_REPO) -> UpdateInfo | None:
     """Query GitHub for the latest release. Returns None on any failure."""
     url = _API_URL.format(owner=owner, repo=repo)
@@ -90,14 +146,28 @@ def fetch_latest_release(owner: str = GITHUB_OWNER, repo: str = GITHUB_REPO) -> 
     if not tag:
         return None
 
-    asset_url = ""
-    asset_name = ""
-    for asset in data.get("assets", []) or []:
-        name = str(asset.get("name") or "")
-        if name.lower().endswith(ASSET_SUFFIXES):
-            asset_url = str(asset.get("browser_download_url") or "")
-            asset_name = name
-            break
+    assets = list(data.get("assets", []) or [])
+    expected_name = expected_installer_name(tag)
+    selected = next(
+        (asset for asset in assets if str(asset.get("name") or "").casefold() == expected_name.casefold()),
+        None,
+    )
+    if selected is None:
+        selected = next(
+            (asset for asset in assets if str(asset.get("name") or "").casefold() == GENERIC_INSTALLER_NAME.casefold()),
+            None,
+        )
+    if selected is None:
+        selected = next(
+            (
+                asset
+                for asset in assets
+                if str(asset.get("name") or "").lower().endswith(ASSET_SUFFIXES)
+            ),
+            None,
+        )
+    asset_url = str(selected.get("browser_download_url") or "") if selected else ""
+    asset_name = str(selected.get("name") or "") if selected else ""
 
     return UpdateInfo(
         version=".".join(str(n) for n in _parse_version(tag)),
@@ -114,12 +184,13 @@ def download_asset(info: UpdateInfo, progress=None) -> Path:
     """Download the release installer to a temp file and return its path."""
     if not info.asset_url:
         raise ValueError("Ten release nie ma pliku instalatora do pobrania.")
-    target = Path(tempfile.gettempdir()) / (info.asset_name or f"SIEKACZ-{info.version}.exe")
+    target = Path(tempfile.gettempdir()) / (info.asset_name or expected_installer_name(info.tag))
+    partial = target.with_suffix(target.suffix + ".part")
     request = urllib.request.Request(
         info.asset_url, headers={"User-Agent": f"SIEKACZ9000/{APP_VERSION}"}
     )
     context = ssl.create_default_context()
-    with urllib.request.urlopen(request, timeout=60, context=context) as response, open(target, "wb") as out:
+    with urllib.request.urlopen(request, timeout=60, context=context) as response, open(partial, "wb") as out:
         total = int(response.headers.get("Content-Length") or 0)
         read = 0
         while True:
@@ -130,6 +201,12 @@ def download_asset(info: UpdateInfo, progress=None) -> Path:
             read += len(chunk)
             if progress and total:
                 progress(read / total)
+    partial.replace(target)
+    try:
+        validate_installer_version(target, info.version)
+    except Exception:
+        target.unlink(missing_ok=True)
+        raise
     return target
 
 

@@ -30,6 +30,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import (
     QAction,
+    QActionGroup,
     QBrush,
     QColor,
     QDesktopServices,
@@ -71,6 +72,7 @@ from PySide6.QtWidgets import (
     QStackedWidget,
     QStyle,
     QStyledItemDelegate,
+    QSystemTrayIcon,
     QTableWidget,
     QTableWidgetItem,
     QTextEdit,
@@ -79,6 +81,8 @@ from PySide6.QtWidgets import (
     QWidget,
     QWidgetAction,
 )
+from PySide6.QtPdf import QPdfDocument
+from PySide6.QtPdfWidgets import QPdfView
 
 from app import project_history
 from app.calculation_process import calculation_process_entry
@@ -174,6 +178,76 @@ def _stack_icon(color: str = "#b8cdf0") -> QIcon:
         painter.drawRoundedRect(QRectF(x, y, 12, 7), 1.4, 1.4)
     painter.end()
     return QIcon(pixmap)
+
+
+def _eye_icon(color: str = "#b8cdf0") -> QIcon:
+    """Compact preview icon for the in-app PDF report."""
+    pixmap = QPixmap(18, 14)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    pen = QPen(QColor(color), 1.35)
+    painter.setPen(pen)
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    painter.drawEllipse(QRectF(1.0, 2.0, 16.0, 10.0))
+    painter.setBrush(QColor(color))
+    painter.drawEllipse(QRectF(7.0, 4.0, 4.0, 4.0))
+    painter.end()
+    return QIcon(pixmap)
+
+
+def _upload_icon(color: str = "#b8cdf0") -> QIcon:
+    """Draw a compact upload-to-tray glyph for the DXF import action."""
+    pixmap = QPixmap(20, 20)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    pen = QPen(QColor(color), 1.8)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    painter.setPen(pen)
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    painter.drawLine(QPointF(10, 3), QPointF(10, 12))
+    painter.drawLine(QPointF(6.2, 7), QPointF(10, 3))
+    painter.drawLine(QPointF(13.8, 7), QPointF(10, 3))
+    painter.drawLine(QPointF(4, 12), QPointF(4, 16.5))
+    painter.drawLine(QPointF(4, 16.5), QPointF(16, 16.5))
+    painter.drawLine(QPointF(16, 16.5), QPointF(16, 12))
+    painter.end()
+    return QIcon(pixmap)
+
+
+def _gear_icon(color: str = "#b8cdf0") -> QIcon:
+    pixmap = QPixmap(20, 20)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    pen = QPen(QColor(color), 1.7)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    painter.setPen(pen)
+    center = QPointF(10, 10)
+    for angle in range(0, 360, 45):
+        radians = math.radians(angle)
+        inner = QPointF(center.x() + math.cos(radians) * 6.0, center.y() + math.sin(radians) * 6.0)
+        outer = QPointF(center.x() + math.cos(radians) * 8.0, center.y() + math.sin(radians) * 8.0)
+        painter.drawLine(inner, outer)
+    painter.drawEllipse(QRectF(4.0, 4.0, 12.0, 12.0))
+    painter.drawEllipse(QRectF(8.0, 8.0, 4.0, 4.0))
+    painter.end()
+    return QIcon(pixmap)
+
+
+def _polish_sheet_count(count: int, missing: bool = False) -> str:
+    """Return the correct Polish plural form for board counts in notifications."""
+    value = max(0, int(count))
+    last_two = value % 100
+    last = value % 10
+    few = last in (2, 3, 4) and not 12 <= last_two <= 14
+    if missing:
+        noun = "brakująca płyta" if value == 1 else "brakujące płyty" if few else "brakujących płyt"
+    else:
+        noun = "płyta" if value == 1 else "płyty" if few else "płyt"
+    return f"{value} {noun}"
 
 
 class _WheelHScrollFilter(QObject):
@@ -1058,16 +1132,18 @@ class SendDialog(QDialog):
 
         title = QLabel("Wyślij rozkrój")
         title.setObjectName("settingsTitle")
-        hint = QLabel("Raport PDF zostanie wygenerowany z aktualnego wyniku rozkroju.")
+        hint = QLabel("Wybierz sposób przekazania aktualnego wyniku rozkroju.")
         hint.setObjectName("summaryLabel")
         hint.setWordWrap(True)
 
         self.opt_email = QRadioButton("Wyślij e-mailem (wbudowany klient SMTP)")
         self.opt_pdf = QRadioButton("Zapisz do pliku PDF")
+        self.opt_dxf = QRadioButton("Zapisz do pliku DXF")
         self.opt_print = QRadioButton("Wyślij do drukarki (wydruk)")
         action_buttons = {
             "email": self.opt_email,
             "pdf": self.opt_pdf,
+            "dxf": self.opt_dxf,
             "print": self.opt_print,
         }
         action_buttons.get(last_action, self.opt_email).setChecked(True)
@@ -1093,7 +1169,7 @@ class SendDialog(QDialog):
         self.printer_combo.setVisible(self.opt_print.isChecked())
         self.opt_print.toggled.connect(self.printer_combo.setVisible)
         group = QButtonGroup(self)
-        for btn in (self.opt_email, self.opt_pdf, self.opt_print):
+        for btn in (self.opt_email, self.opt_pdf, self.opt_dxf, self.opt_print):
             group.addButton(btn)
 
         self.save_project_check = QCheckBox("Zapisz też projekt w historii")
@@ -1127,6 +1203,7 @@ class SendDialog(QDialog):
         layout.addWidget(self.opt_email)
         layout.addWidget(self.email_config_btn)
         layout.addWidget(self.opt_pdf)
+        layout.addWidget(self.opt_dxf)
         layout.addWidget(self.opt_print)
         layout.addWidget(self.printer_combo)
         layout.addWidget(self.skip_summary_check)
@@ -1136,6 +1213,8 @@ class SendDialog(QDialog):
     def selected_action(self) -> str:
         if self.opt_pdf.isChecked():
             return "pdf"
+        if self.opt_dxf.isChecked():
+            return "dxf"
         if self.opt_print.isChecked():
             return "print"
         return "email"
@@ -1152,6 +1231,127 @@ class SendDialog(QDialog):
 
     def should_skip_summary(self) -> bool:
         return self.skip_summary_check.isChecked()
+
+
+class PannablePdfView(QPdfView):
+    """A PDF view with direct left-button panning for large cutting drawings."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._pan_origin = QPoint()
+        self._is_panning = False
+        self.setPageMode(QPdfView.PageMode.MultiPage)
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._is_panning = True
+            self._pan_origin = event.position().toPoint()
+            self.viewport().setCursor(Qt.CursorShape.ClosedHandCursor)
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:
+        if self._is_panning:
+            position = event.position().toPoint()
+            delta = position - self._pan_origin
+            self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - delta.x())
+            self.verticalScrollBar().setValue(self.verticalScrollBar().value() - delta.y())
+            self._pan_origin = position
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        if self._is_panning and event.button() == Qt.MouseButton.LeftButton:
+            self._is_panning = False
+            self.viewport().setCursor(Qt.CursorShape.OpenHandCursor)
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+
+class PdfPreviewDialog(QDialog):
+    """A lightweight in-app preview for the transient cutting report."""
+
+    def __init__(self, path: Path, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Podgląd raportu PDF")
+        self.setModal(True)
+        self.resize(1080, 780)
+        self._document = QPdfDocument(self)
+        self._document.load(str(path))
+        self._view = PannablePdfView(self)
+        self._view.setDocument(self._document)
+        self._view.setZoomMode(QPdfView.ZoomMode.FitInView)
+        self._view.pageNavigator().currentPageChanged.connect(self._refresh_page_label)
+
+        previous = QToolButton()
+        previous.setObjectName("headerIconButton")
+        previous.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowBack))
+        previous.setToolTip("Poprzednia strona")
+        previous.clicked.connect(lambda: self._change_page(-1))
+        next_page = QToolButton()
+        next_page.setObjectName("headerIconButton")
+        next_page.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowForward))
+        next_page.setToolTip("Następna strona")
+        next_page.clicked.connect(lambda: self._change_page(1))
+        zoom_out = QToolButton()
+        zoom_out.setObjectName("headerIconButton")
+        zoom_out.setText("−")
+        zoom_out.setToolTip("Oddal")
+        zoom_out.clicked.connect(lambda: self._change_zoom(1 / 1.2))
+        zoom_in = QToolButton()
+        zoom_in.setObjectName("headerIconButton")
+        zoom_in.setText("+")
+        zoom_in.setToolTip("Przybliż")
+        zoom_in.clicked.connect(lambda: self._change_zoom(1.2))
+        fit = QToolButton()
+        fit.setObjectName("headerIconButton")
+        fit.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_TitleBarMaxButton))
+        fit.setToolTip("Dopasuj strony do widoku")
+        fit.clicked.connect(lambda: self._view.setZoomMode(QPdfView.ZoomMode.FitInView))
+        self._page_label = QLabel()
+        self._page_label.setObjectName("summaryLabel")
+        self._refresh_page_label()
+
+        close = QPushButton("Zamknij")
+        close.setObjectName("smallButton")
+        close.clicked.connect(self.accept)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 10, 10, 10)
+        toolbar = QHBoxLayout()
+        toolbar.addWidget(previous)
+        toolbar.addWidget(next_page)
+        toolbar.addWidget(self._page_label)
+        toolbar.addStretch(1)
+        toolbar.addWidget(zoom_out)
+        toolbar.addWidget(fit)
+        toolbar.addWidget(zoom_in)
+        layout.addLayout(toolbar)
+        layout.addWidget(self._view, 1)
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        buttons.addWidget(close)
+        layout.addLayout(buttons)
+
+    def _refresh_page_label(self, page: int | None = None) -> None:
+        current = self._view.pageNavigator().currentPage() if page is None else page
+        count = self._document.pageCount()
+        self._page_label.setText(f"Strona {max(0, current) + 1} / {max(1, count)}")
+
+    def _change_page(self, offset: int) -> None:
+        count = self._document.pageCount()
+        if count <= 0:
+            return
+        current = self._view.pageNavigator().currentPage()
+        target = max(0, min(count - 1, current + offset))
+        self._view.pageNavigator().jump(target, QPointF(), self._view.zoomFactor())
+
+    def _change_zoom(self, factor: float) -> None:
+        current = max(0.2, float(self._view.zoomFactor() or 1.0))
+        self._view.setZoomMode(QPdfView.ZoomMode.Custom)
+        self._view.setZoomFactor(max(0.2, min(6.0, current * factor)))
 
 class SmtpConfigDialog(QDialog):
     def __init__(self, parent: QWidget) -> None:
@@ -2269,6 +2469,11 @@ class SimpleCutWindow(QMainWindow):
         self._calculation_worker: CalculationWorker | None = None
         self._is_calculating = False
         self._is_exporting = False
+        self._notification_tray: QSystemTrayIcon | None = None
+        if sys.platform.startswith("win") and QSystemTrayIcon.isSystemTrayAvailable():
+            self._notification_tray = QSystemTrayIcon(self.windowIcon(), self)
+            self._notification_tray.setToolTip("SIEKACZ 9000")
+            self._notification_tray.show()
         self.current_project_id: str | None = None
         self.current_project_name = ""
         self.current_client_name = ""
@@ -2402,10 +2607,10 @@ class SimpleCutWindow(QMainWindow):
         self.stock_table.horizontalHeader().setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         # Keep the material badge and stack selector compact. The width column
         # expands to use the remaining table space instead of leaving a gap.
-        for column, width in enumerate((46, 58, 58, 42, 54, 48)):
+        for column, width in enumerate((72, 100, 100, 80, 150, 52)):
             self.stock_table.horizontalHeader().setSectionResizeMode(column, QHeaderView.ResizeMode.Fixed)
             self.stock_table.setColumnWidth(column, width)
-        self.stock_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.stock_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
 
         self._add_stock_row({"thickness": 18.0, "width": 2000, "height": 1000, "quantity": 1})
 
@@ -2414,7 +2619,7 @@ class SimpleCutWindow(QMainWindow):
         self.parts.setHorizontalHeaderLabels(["#", "GR.", "SZER.", "DŁ.", "SZT.", "MATERIAŁ"])
         for column, hint in enumerate(("Numer", "Grubość [mm]", "Szerokość [mm]", "Długość [mm]", "Ilość sztuk", "Materiał formatki")):
             self.parts.horizontalHeaderItem(column).setToolTip(hint)
-        self.parts.setToolTip("Przeciągnij plik CSV lub XLSX, aby dodać formatki")
+        self.parts.setToolTip("")
         self.parts.files_dropped.connect(self._on_parts_files_dropped)
         self.parts.setAlternatingRowColors(True)
         self.parts.verticalHeader().setVisible(False)
@@ -2436,7 +2641,7 @@ class SimpleCutWindow(QMainWindow):
         )
         self.parts.verticalHeader().setDefaultSectionSize(36)
         self.parts.horizontalHeader().setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        for column, width in enumerate((28, 42, 54, 54, 40, 76)):
+        for column, width in enumerate((34, 72, 100, 100, 80, 160)):
             self.parts.horizontalHeader().setSectionResizeMode(column, QHeaderView.ResizeMode.Fixed)
             self.parts.setColumnWidth(column, width)
         self.parts.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
@@ -2883,6 +3088,8 @@ class SimpleCutWindow(QMainWindow):
         self.warning.clear()
         self.warning.hide()
         self.layout_view.show_result(None)
+        if hasattr(self, "preview_pdf_button"):
+            self.preview_pdf_button.setEnabled(False)
         # Hide zoom controls on start / new-cut screen (no preview to zoom into)
         if hasattr(self, "_zoom_widget"):
             self._zoom_widget.hide()
@@ -2899,13 +3106,30 @@ class SimpleCutWindow(QMainWindow):
         layout.setContentsMargins(24, 16, 24, 12)
         layout.setSpacing(14)
 
+        self.input_panel_toggle = QToolButton()
+        self.input_panel_toggle.setObjectName("headerIconButton")
+        self.input_panel_toggle.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowLeft))
+        self.input_panel_toggle.setToolTip("Schowaj panel wprowadzania danych")
+        self.input_panel_toggle.clicked.connect(self._toggle_input_panel)
+        layout.addWidget(self.input_panel_toggle)
+
         title = QLabel("Podgląd rozkroju")
         title.setObjectName("sectionTitle")
         layout.addWidget(title)
+        self.preview_pdf_button = QToolButton()
+        self.preview_pdf_button.setIcon(_eye_icon())
+        self.preview_pdf_button.setToolTip("Otwórz tymczasowy podgląd raportu PDF")
+        self.preview_pdf_button.setEnabled(False)
+        self.preview_pdf_button.setObjectName("headerIconButton")
+        self.preview_pdf_button.clicked.connect(self.open_temporary_pdf_preview)
+        layout.addWidget(self.preview_pdf_button)
         layout.addStretch(1)
 
         metrics = QWidget()
         metrics.setObjectName("previewMetrics")
+        metrics.setMinimumWidth(460)
+        metrics.setMaximumWidth(600)
+        metrics.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         metrics_layout = QHBoxLayout(metrics)
         metrics_layout.setContentsMargins(18, 8, 18, 8)
         metrics_layout.setSpacing(18)
@@ -2922,11 +3146,15 @@ class SimpleCutWindow(QMainWindow):
         ):
             box = QWidget()
             box.setObjectName("previewMetricBox")
+            box.setMinimumWidth(92)
+            box.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             box_layout = QVBoxLayout(box)
             box_layout.setContentsMargins(0, 0, 0, 0)
             box_layout.setSpacing(1)
             caption = QLabel(label)
             caption.setObjectName("previewMetricLabel")
+            caption.setWordWrap(True)
+            caption.setMinimumWidth(0)
             value.setObjectName("previewMetricValue")
             box_layout.addWidget(caption)
             box_layout.addWidget(value)
@@ -2937,8 +3165,8 @@ class SimpleCutWindow(QMainWindow):
     def _cut_tab(self) -> QWidget:
         left = QWidget()
         left.setObjectName("controlPanel")
-        left.setMinimumWidth(426)
-        left.setMaximumWidth(446)
+        left.setMinimumWidth(650)
+        left.setMaximumWidth(670)
 
         layout = QVBoxLayout(left)
         layout.setContentsMargins(16, 16, 16, 16)
@@ -2964,8 +3192,8 @@ class SimpleCutWindow(QMainWindow):
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll.setWidget(left)
-        scroll.setMinimumWidth(446)
-        scroll.setMaximumWidth(466)
+        scroll.setMinimumWidth(0)
+        scroll.setMaximumWidth(700)
 
         right = QWidget()
         right.setObjectName("workspacePanel")
@@ -3022,9 +3250,13 @@ class SimpleCutWindow(QMainWindow):
         splitter.setObjectName("mainSplitter")
         splitter.addWidget(scroll)
         splitter.addWidget(right)
+        splitter.setCollapsible(0, True)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
-        splitter.setSizes([466, 1094])
+        splitter.setSizes([675, 885])
+        self._main_splitter = splitter
+        self._input_scroll = scroll
+        self._input_panel_width = 675
 
         tab = QWidget()
         tab.setObjectName("workspaceRoot")
@@ -3032,6 +3264,37 @@ class SimpleCutWindow(QMainWindow):
         tab_layout.setContentsMargins(0, 0, 0, 0)
         tab_layout.addWidget(splitter)
         return tab
+
+    def _restore_input_panel_width(self) -> None:
+        splitter = getattr(self, "_main_splitter", None)
+        if splitter is None or splitter.width() <= 0:
+            return
+        width = min(675, max(640, splitter.width() // 2))
+        splitter.setSizes([width, max(1, splitter.width() - width)])
+
+    def showEvent(self, event) -> None:  # type: ignore[override]
+        super().showEvent(event)
+        if not getattr(self, "_input_panel_initialized", False):
+            self._input_panel_initialized = True
+            QTimer.singleShot(0, self._restore_input_panel_width)
+
+    def _toggle_input_panel(self) -> None:
+        splitter = getattr(self, "_main_splitter", None)
+        if splitter is None:
+            return
+        sizes = splitter.sizes()
+        total = max(sum(sizes), splitter.width())
+        collapsed = not sizes or sizes[0] <= 12
+        if collapsed:
+            width = max(640, int(getattr(self, "_input_panel_width", 675)))
+            splitter.setSizes([width, max(1, total - width)])
+            self.input_panel_toggle.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowLeft))
+            self.input_panel_toggle.setToolTip("Schowaj panel wprowadzania danych")
+        else:
+            self._input_panel_width = sizes[0]
+            splitter.setSizes([0, total])
+            self.input_panel_toggle.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowRight))
+            self.input_panel_toggle.setToolTip("Pokaż panel wprowadzania danych")
 
     def _zoom_controls(self) -> QWidget:
         controls = QWidget()
@@ -3496,13 +3759,18 @@ class SimpleCutWindow(QMainWindow):
         undo_stock = QPushButton("Cofnij")
         undo_stock.setObjectName("smallButton")
         undo_stock.setToolTip("Usuń ostatnio dodaną płytę (od dołu tabeli)")
+        import_dxf = QToolButton()
+        import_dxf.setObjectName("smallIconButton")
+        import_dxf.setIcon(_upload_icon())
+        import_dxf.setToolTip("Wczytaj formatki z pliku DXF")
+        import_dxf.clicked.connect(self.import_dxf_parts)
         add_stock.clicked.connect(self._add_blank_stock_row_and_focus)
         remove_stock.clicked.connect(self._remove_selected_stock_rows)
         undo_stock.clicked.connect(self._remove_last_stock_row)
         add_stock.setMinimumWidth(94)
         remove_stock.setMinimumWidth(82)
         undo_stock.setMinimumWidth(92)
-        self.stock_buttons.extend([add_stock, remove_stock, undo_stock])
+        self.stock_buttons.extend([add_stock, remove_stock, undo_stock, import_dxf])
 
 
 
@@ -3511,6 +3779,7 @@ class SimpleCutWindow(QMainWindow):
         stock_buttons.addWidget(add_stock)
         stock_buttons.addWidget(remove_stock)
         stock_buttons.addWidget(undo_stock)
+        stock_buttons.addWidget(import_dxf)
         stock_buttons.addStretch(1)
 
         quick_label = QLabel("Szybki format")
@@ -3974,6 +4243,8 @@ class SimpleCutWindow(QMainWindow):
         menu = QMenu(button)
         menu.setToolTipsVisible(True)
         menu.addSection("Płyty w jednym sztaplu")
+        group = QActionGroup(menu)
+        group.setExclusive(True)
         quick_values = list(range(1, 11))
         if stack_size not in quick_values:
             quick_values.append(stack_size)
@@ -3989,6 +4260,7 @@ class SimpleCutWindow(QMainWindow):
             action = menu.addAction(stack_label(value))
             action.setCheckable(True)
             action.setChecked(value == stack_size)
+            group.addAction(action)
             if value > available:
                 action.setToolTip(f"Wymaga wpisania co najmniej {value} płyt w kolumnie SZT.")
             action.triggered.connect(
@@ -4337,6 +4609,55 @@ class SimpleCutWindow(QMainWindow):
         except Exception:
             return 0
 
+    @safe_ui_action("Nie udało się wczytać formatek z DXF.")
+    def import_dxf_parts(self) -> None:
+        """Import the complete DXF drawing as one rectangular blank."""
+        last_dir = str(repositories.get_setting("last_dxf_import_dir", "") or "")
+        path_str, _ = QFileDialog.getOpenFileName(
+            self,
+            "Wczytaj formatki z DXF",
+            last_dir,
+            "Plik DXF (*.dxf)",
+        )
+        if not path_str:
+            return
+        source = Path(path_str)
+        repositories.set_setting("last_dxf_import_dir", str(source.parent))
+
+        material = ""
+        thickness = float(getattr(self, "_last_thickness", 0.0) or 0.0)
+        try:
+            stock = self._collect_stock()
+            if stock:
+                material = "" if stock[-1].material == "standard" else stock[-1].material
+                thickness = stock[-1].thickness
+        except ValueError:
+            # A partially entered stock row must not prevent the user from
+            # importing details. The current material/thickness stay as defaults.
+            material = str(self._selected_material_name(thickness) or "")
+
+        from import_export.dxf_io import DxfError, import_dxf_parts
+
+        try:
+            imported = import_dxf_parts(source, material=material, thickness=thickness)
+        except DxfError as exc:
+            QMessageBox.warning(self, "Import DXF", str(exc))
+            return
+
+        self._record_parts_state()
+        for part in imported:
+            self.add_part_row([part.thickness, part.width, part.height, part.quantity, part.material])
+        self._record_parts_state()
+        total = sum(part.quantity for part in imported)
+        QMessageBox.information(
+            self,
+            "Import DXF",
+            f"Dodano rysunek jako {total} formatkę o wymiarze "
+            f"{imported[0].width:g} x {imported[0].height:g} mm. "
+            "Wymiar obejmuje cały obszar geometrii DXF.",
+        )
+        self.statusBar().showMessage(f"Wczytano DXF: {source.name}", 5000)
+
     def _parts_section(self) -> QWidget:
         section = QWidget()
         section.setObjectName("sectionCard")
@@ -4349,6 +4670,11 @@ class SimpleCutWindow(QMainWindow):
         undo_last.setObjectName("smallButton")
         undo_last.setToolTip("Usuń ostatnio dodaną formatkę (od dołu tabeli)")
         undo_last.clicked.connect(self._remove_last_part_row)
+        technical_editor = QToolButton()
+        technical_editor.setObjectName("smallIconButton")
+        technical_editor.setIcon(_gear_icon())
+        technical_editor.setToolTip("Otwórz eksperymentalny edytor rysunku technicznego")
+        technical_editor.clicked.connect(self.open_technical_editor)
 
         for _btn in (add, remove, undo_last):
             _btn.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
@@ -4365,6 +4691,7 @@ class SimpleCutWindow(QMainWindow):
         buttons.addWidget(add)
         buttons.addWidget(remove)
         buttons.addWidget(undo_last)
+        buttons.addWidget(technical_editor)
         buttons.addStretch(1)
 
         layout = QVBoxLayout(section)
@@ -4374,6 +4701,19 @@ class SimpleCutWindow(QMainWindow):
         layout.addLayout(buttons)
         layout.addWidget(self.parts, 1)
         return section
+
+    @safe_ui_action("Nie udało się otworzyć edytora technicznego.")
+    def open_technical_editor(self) -> None:
+        from app.technical_editor import TechnicalEditorDialog
+
+        dialog = TechnicalEditorDialog(self)
+        if dialog.exec() != QDialog.DialogCode.Accepted or not dialog.result_dimensions:
+            return
+        width, height = dialog.result_dimensions
+        thickness = float(getattr(self, "_last_thickness", 0.0) or 0.0)
+        material = self._selected_material_name(thickness)
+        self.add_part_row([thickness, width, height, 1, material])
+        self._focus_part_cell(self.parts.rowCount() - 1, 4)
 
     def _remove_last_part_row(self) -> None:
         """Remove the last non-blank row from the parts table, with undo support."""
@@ -5102,7 +5442,22 @@ class SimpleCutWindow(QMainWindow):
         name = dialog.name.text().strip() or self._default_project_name()
         client_name = dialog.client_name.text().strip()
         notes = dialog.notes.toPlainText().strip()
-        record = self._build_project_record(name, client_name, notes, force_new=dialog.save_as_new)
+        save_as_new = dialog.save_as_new
+        if self.current_project_id and not save_as_new:
+            confirm = QMessageBox(self)
+            confirm.setWindowTitle("Projekt już istnieje")
+            confirm.setIcon(QMessageBox.Icon.Question)
+            confirm.setText(f'Projekt „{self.current_project_name or name}” jest już zapisany.')
+            confirm.setInformativeText("Czy chcesz nadpisać istniejący projekt, czy utworzyć nowy?")
+            overwrite_button = confirm.addButton("Nadpisz projekt", QMessageBox.ButtonRole.AcceptRole)
+            new_button = confirm.addButton("Utwórz nowy", QMessageBox.ButtonRole.ActionRole)
+            confirm.addButton("Anuluj", QMessageBox.ButtonRole.RejectRole)
+            confirm.exec()
+            if confirm.clickedButton() is new_button:
+                save_as_new = True
+            elif confirm.clickedButton() is not overwrite_button:
+                return
+        record = self._build_project_record(name, client_name, notes, force_new=save_as_new)
         saved = project_history.save_project_record(record)
         self.current_project_id = str(saved.get("id") or "")
         self.current_project_name = str(saved.get("name") or "")
@@ -5407,28 +5762,6 @@ class SimpleCutWindow(QMainWindow):
     def calculate(self) -> None:
         if self._is_calculating:
             return
-        # Pre-check: warn when a single row has a suspiciously high quantity
-        # so the user can catch accidental key-mashes before a long calculation.
-        for _row in range(self.parts.rowCount()):
-            _qty_item = self.parts.item(_row, 4)
-            if _qty_item:
-                try:
-                    _qty_val = int(_qty_item.text().strip())
-                except (ValueError, AttributeError):
-                    _qty_val = 0
-                if _qty_val > 500:
-                    _reply = QMessageBox.question(
-                        self,
-                        "Duża ilość formatek",
-                        f"Wiersz {_row + 1}: wpisano <b>{_qty_val} szt.</b> dla jednej pozycji.<br><br>"
-                        "Tak duża ilość może znacznie wydłużyć czas obliczeń "
-                        "lub znacząco obciążyć komputer.<br>"
-                        "Czy na pewno chcesz kontynuować?",
-                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                        QMessageBox.StandardButton.No,
-                    )
-                    if _reply != QMessageBox.StandardButton.Yes:
-                        return
         try:
             parts = self._collect_parts()
             primary = self._project_for_calculation(parts)
@@ -5481,6 +5814,23 @@ class SimpleCutWindow(QMainWindow):
         self._calculation_thread = None
         self._calculation_worker = None
 
+    def _notify_calculation_finished(self, result: object) -> None:
+        """Show a native Windows notification without interrupting the operator."""
+        tray = self._notification_tray
+        if tray is None:
+            return
+        layouts = list(getattr(result, "sheet_layouts", []) or [])
+        missing = list(getattr(result, "missing_sheet_layouts", []) or [])
+        message = f"Rozkrój gotowy: {_polish_sheet_count(len(layouts))}"
+        if missing:
+            message += f". {_polish_sheet_count(len(missing), missing=True)}"
+        tray.showMessage(
+            "SIEKACZ 9000",
+            message,
+            QSystemTrayIcon.MessageIcon.Information,
+            8000,
+        )
+
     def _calculation_worker_finished(self, result: object, error: object) -> None:
         # If the user cancelled, drop the result silently — the run already
         # finished but the user no longer wants it.
@@ -5505,6 +5855,7 @@ class SimpleCutWindow(QMainWindow):
             elif result is not None:
                 self._apply_result(result)
                 self.optimization_progress_overlay.finish()
+                self._notify_calculation_finished(result)
                 overlay_finished = True
         except Exception as exc:
             _logger.exception("Exception while applying optimization result")
@@ -5531,6 +5882,8 @@ class SimpleCutWindow(QMainWindow):
 
     def _apply_result(self, result) -> None:
         self.last_result = result
+        if hasattr(self, "preview_pdf_button"):
+            self.preview_pdf_button.setEnabled(self._has_sendable_result())
         # Drain pending events before heavy rendering so Windows does not mark the
         # window as "not responding" while the layout is being drawn for the first time.
         QApplication.processEvents()
@@ -5873,12 +6226,50 @@ class SimpleCutWindow(QMainWindow):
             display_orientation=self.current_display_orientation()
         )
 
+    @safe_ui_action("Nie udało się otworzyć podglądu PDF.")
+    def open_temporary_pdf_preview(self) -> None:
+        if not self._has_sendable_result():
+            QMessageBox.information(self, "Podgląd PDF", "Najpierw oblicz rozkrój.")
+            return
+        import tempfile
+
+        preview_dir = Path(tempfile.gettempdir()) / "SIEKACZ9000" / "preview"
+        preview_dir.mkdir(parents=True, exist_ok=True)
+        target = preview_dir / f"{self._send_base_name()}_podglad.pdf"
+        self._write_send_pdf(target, skip_summary=False)
+        PdfPreviewDialog(target, self).exec()
+
+    @safe_ui_action("Nie udało się zapisać DXF.")
+    def _write_send_dxf(self) -> None:
+        from import_export.dxf_io import DxfError, export_layout_dxf
+
+        last_dir = str(repositories.get_setting("last_export_dir", "") or "")
+        base = self._send_base_name()
+        initial_path = str(Path(last_dir) / f"{base}.dxf") if last_dir else f"{base}.dxf"
+        path_str, _ = QFileDialog.getSaveFileName(self, "Zapisz rozkrój DXF", initial_path, "Plik DXF (*.dxf)")
+        if not path_str:
+            return
+        try:
+            target = export_layout_dxf(Path(path_str), self.last_result)
+        except DxfError as exc:
+            QMessageBox.warning(self, "Eksport DXF", str(exc))
+            return
+        repositories.set_setting("last_export_dir", str(target.parent))
+        self.statusBar().showMessage(f"Zapisano DXF: {target.name}", 5000)
+
     @safe_ui_action("Nie udało się wysłać rozkroju.")
     def _do_send(self, action: str, skip_summary: bool = False, printer_name: str = "") -> None:
         import os
         import tempfile
 
         base = self._send_base_name()
+        if action == "dxf":
+            QMessageBox.information(
+                self,
+                "Eksport DXF",
+                "Jeszcze nad tym pracuję, ale chyba idzie nieźle.",
+            )
+            return
         if action == "pdf":
             last_dir = str(repositories.get_setting("last_export_dir", ""))
             initial_path = os.path.join(last_dir, base + ".pdf") if last_dir else base + ".pdf"

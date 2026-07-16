@@ -11,7 +11,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from PySide6.QtWidgets import QApplication
 
-from algorithms.two_d_vertical_segmented import _part_difficulty, _saved_axis, _saved_used_length, _strategic_dimension, optimize_2d_vertical_segmented
+from algorithms.two_d_vertical_segmented import (
+    _build_right_residual_region,
+    _part_difficulty,
+    _saved_axis,
+    _saved_used_length,
+    _strategic_dimension,
+    optimize_2d_vertical_segmented,
+)
 from core.models import OptimizationSettings, PlacedSheetPart, Project, SheetLayout, SheetPart, SheetStock
 from ui.layout_view import LayoutView
 from workers.optimizer_worker import optimize_sheet_project
@@ -67,6 +74,30 @@ def test_long_parts_use_rotated_residual_strip() -> None:
     assert sum(placement.rotated for placement in _parts_by_name(layout, "A")) == 4
     assert layout.used_height >= 999
     _assert_layout_clean(layout, 5.2)
+
+
+def test_right_residual_strip_reserves_the_kerf_before_a_rotated_part() -> None:
+    """A nominal 155 mm tail is only 150 mm usable after its separating cut."""
+    stock = SheetStock("standard", 5, 2000, 1000, 1, allow_rotation=True)
+    part = SheetPart("A", 180, 155, 1, "standard", 5, allow_rotation=True)
+    layout = SheetLayout(
+        stock=stock,
+        sheet_index=1,
+        parts=[PlacedSheetPart(part, x=1665, y=0, width=180, height=155)],
+        vertical_segments=[{"index": 1, "x": 0, "width": 1845, "right": 1845}],
+    )
+
+    region = _build_right_residual_region(
+        layout,
+        [part],
+        kerf=5,
+        margin=0,
+        min_reusable_size=80,
+    )
+
+    assert region is not None
+    assert region.width == 150
+    assert region.fitting_part_names == ()
 
 
 def test_small_parts_are_fillers_after_waste_recovery() -> None:
@@ -644,6 +675,7 @@ def test_worker_keeps_repeated_parts_uniform_grid_after_kerf_tolerance() -> None
 
 def main() -> None:
     test_long_parts_use_rotated_residual_strip()
+    test_right_residual_strip_reserves_the_kerf_before_a_rotated_part()
     test_small_parts_are_fillers_after_waste_recovery()
     test_tiny_parts_do_not_increase_missing_sheet_count_when_they_fit_existing_waste()
     test_strategic_dimension_profiles_make_tiny_parts_fillers()

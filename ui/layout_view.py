@@ -1139,6 +1139,19 @@ class LayoutView(QGraphicsView):
             return f"{int(group['n'])} × {group['w']:.0f} mm"
         return f"{group['total']:.0f} mm"
 
+    @staticmethod
+    def _shows_total_cut_span(groups) -> bool:
+        """Show a single summary dimension only when multiple bands exist."""
+        return len(groups) > 1
+
+    @staticmethod
+    def _total_cut_span_label(groups) -> str:
+        # The first-to-last span is the actual occupied cut width. It includes
+        # each effective kerf gap (kerf plus configured tolerance), including
+        # gaps between different repeated bands.
+        total = max(group["end"] for group in groups) - min(group["start"] for group in groups)
+        return f"{total:.0f} mm"
+
     def _bracket_h(self, x1, x2, base_y, count, uniform, label_text, order, txt, pen, inner, label_above) -> None:
         no = Qt.MouseButton.NoButton
         tick, inner_tick = 4.5, 2.5
@@ -1269,6 +1282,20 @@ class LayoutView(QGraphicsView):
             label.setPos(bracket_x - 5 - lr.width(), center_y - lr.height() / 2)
             label.setAcceptedMouseButtons(no_btn)
 
+        if self._shows_total_cut_span(groups):
+            total_x = bracket_x - 19
+            y_top = sheet_rect.top() + (sw - max(group["end"] for group in groups)) * scale
+            y_bot = sheet_rect.top() + (sw - min(group["start"] for group in groups)) * scale
+            line = self.scene.addLine(total_x, y_top, total_x, y_bot, pen)
+            line.setAcceptedMouseButtons(no_btn)
+            for sy in (y_top, y_bot):
+                t = self.scene.addLine(total_x - tick, sy, total_x + tick, sy, tick_pen)
+                t.setAcceptedMouseButtons(no_btn)
+            total_label = self._draw_label(self._total_cut_span_label(groups), 0, 0, 6, text_color, bold=True)
+            total_bounds = total_label.boundingRect()
+            total_label.setPos(total_x - 5 - total_bounds.width(), (y_top + y_bot - total_bounds.height()) / 2)
+            total_label.setAcceptedMouseButtons(no_btn)
+
     def _draw_short_side_rotated(self, layout, sheet_rect, scale, groups, pen, tick_pen, inner_pen, text_color, tick, inner_tick) -> None:
         """Cross-cut bracket for the rotated (vertical) display — drawn along the bottom edge."""
         no_btn = Qt.MouseButton.NoButton
@@ -1298,6 +1325,20 @@ class LayoutView(QGraphicsView):
             lr = label.boundingRect()
             label.setPos(center_x - lr.width() / 2, bottom_y + 4)
             label.setAcceptedMouseButtons(no_btn)
+
+        if self._shows_total_cut_span(groups):
+            total_y = bottom_y + 20
+            x1 = sheet_rect.left() + min(group["start"] for group in groups) * scale
+            x2 = sheet_rect.left() + max(group["end"] for group in groups) * scale
+            line = self.scene.addLine(x1, total_y, x2, total_y, pen)
+            line.setAcceptedMouseButtons(no_btn)
+            for sx in (x1, x2):
+                t = self.scene.addLine(sx, total_y - tick, sx, total_y + tick, tick_pen)
+                t.setAcceptedMouseButtons(no_btn)
+            total_label = self._draw_label(self._total_cut_span_label(groups), 0, 0, 6, text_color, bold=True)
+            total_bounds = total_label.boundingRect()
+            total_label.setPos((x1 + x2 - total_bounds.width()) / 2, total_y + 4)
+            total_label.setAcceptedMouseButtons(no_btn)
 
     def _draw_segment_dimensioning(self, layout: SheetLayout, sheet_rect: QRectF, scale: float, display_rotated: bool) -> None:
         groups = self._compute_vertical_bands(layout)
@@ -1366,6 +1407,20 @@ class LayoutView(QGraphicsView):
             base_y = bottom_y + 4
             label.setPos(center_x - lr.width() / 2, base_y)
             label.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+
+        if self._shows_total_cut_span(groups):
+            total_y = bottom_y + 20
+            x1 = sheet_rect.left() + min(group["start"] for group in groups) * scale
+            x2 = sheet_rect.left() + max(group["end"] for group in groups) * scale
+            total_line = self.scene.addLine(x1, total_y, x2, total_y, pen)
+            total_line.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+            for sx in (x1, x2):
+                tick_line = self.scene.addLine(sx, total_y - tick, sx, total_y + tick, tick_pen)
+                tick_line.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+            total_label = self._draw_label(self._total_cut_span_label(groups), 0, 0, 6, text_color, bold=True)
+            total_bounds = total_label.boundingRect()
+            total_label.setPos((x1 + x2 - total_bounds.width()) / 2, total_y + 4)
+            total_label.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
 
     def _draw_short_side_dimensioning(self, layout: SheetLayout, sheet_rect: QRectF, scale: float, display_rotated: bool) -> None:
         """Dimension the main horizontal cross-cuts on the short (left) side.
@@ -1437,6 +1492,20 @@ class LayoutView(QGraphicsView):
             lb = label.boundingRect()
             label.setPos(left_x - 5 - lb.width(), center_y - lb.height() / 2)
             label.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+
+        if self._shows_total_cut_span(groups):
+            total_x = left_x - 19
+            y1 = sheet_rect.top() + min(group["start"] for group in groups) * scale
+            y2 = sheet_rect.top() + max(group["end"] for group in groups) * scale
+            total_line = self.scene.addLine(total_x, y1, total_x, y2, pen)
+            total_line.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+            for sy in (y1, y2):
+                tick_line = self.scene.addLine(total_x - tick, sy, total_x + tick, sy, tick_pen)
+                tick_line.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+            total_label = self._draw_label(self._total_cut_span_label(groups), 0, 0, 6, text_color, bold=True)
+            total_bounds = total_label.boundingRect()
+            total_label.setPos(total_x - 5 - total_bounds.width(), (y1 + y2 - total_bounds.height()) / 2)
+            total_label.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
 
     def _part_colors(self, part_width: float, part_height: float, missing: bool) -> tuple[QColor, QColor, QColor]:
         if self.print_mode:
@@ -1617,12 +1686,12 @@ class LayoutView(QGraphicsView):
             if display_rotated:
                 dimension_left_margin = 20.0
                 dimension_top_margin = 20.0
-                dimension_bottom_margin = 30.0
+                dimension_bottom_margin = 54.0
                 dimension_right_margin = 0.0
             else:
                 dimension_left_margin = 8.0    # minimal left margin
                 dimension_top_margin = 20.0    # top dimension line
-                dimension_bottom_margin = 30.0  # bottom size labels
+                dimension_bottom_margin = 54.0  # repeated-band labels plus total occupied span
                 dimension_right_margin = 8.0   # minimal right margin
             preview_card_w = max(sheet_w + 36 + dimension_left_margin + dimension_right_margin, 720)
             legend_cols = max(1, int((preview_card_w - 36) // (190.0 if self.print_mode else 210.0)))

@@ -10,53 +10,32 @@ set "VENV_PY=%VENV_DIR%\Scripts\python.exe"
 call "%~dp0SETUP_ENV.bat"
 if errorlevel 1 exit /b %errorlevel%
 
-rem ── 1. Narzedzia budowania ───────────────────────────────────────────────────
-echo Instaluje PyInstaller i PyArmor...
+echo Instaluje narzedzia budowania...
 "%VENV_PY%" -m pip install --disable-pip-version-check pyinstaller pyarmor
 if errorlevel 1 goto :failed
 
-rem ── 2. Manifest integralnosci ────────────────────────────────────────────────
 echo Generuje manifest integralnosci...
 "%VENV_PY%" -m app.integrity
 if errorlevel 1 goto :failed
 
-rem ── 3. Obfuskacja PyArmor ────────────────────────────────────────────────────
-rem PyArmor szyfruje bajtkod tak, ze pliki .pyc w EXE sa nieczytelne.
-rem
-rem LICENCJA: darmowy tier = max 30 plikow .py. Ten projekt ma ok. 50 plikow,
-rem wiec wymagana jest licencja PyArmor Pro ok. 49 USD lifetime:
-rem   https://pyarmor.readthedocs.io/en/latest/licenses.html
-rem Po zakupie aktywuj: pyarmor reg TWOJ_PLIK_LICENCJI.zip
-rem Jezeli nie masz licencji, skrypt automatycznie zbuduje EXE bez obfuskacji.
-
-echo Obfuskuje kod zrodlowy (PyArmor)...
+echo Probuje obfuskowac kod zrodlowy...
 if exist ".pyarmor_build" rmdir /s /q ".pyarmor_build"
-
 "%VENV_PY%" -m pyarmor gen --recursive --output .pyarmor_build main.py
 if errorlevel 1 (
-    echo.
-    echo [WARN] Obfuskacja nie powiodla sie. Mozliwe przyczyny:
-    echo [WARN]  - Darmowy tier PyArmor: limit 30 plikow, ten projekt ma wiecej.
-    echo [WARN]  - Brak licencji. Aktywuj: pyarmor reg PLIK_LICENCJI.zip
-    echo [WARN]  - Info: https://pyarmor.readthedocs.io/en/latest/licenses.html
-    echo [WARN] Buduje EXE bez obfuskacji...
-    echo.
+    echo [WARN] Obfuskacja niedostepna. Buduje EXE bez obfuskacji.
     if exist ".pyarmor_build" rmdir /s /q ".pyarmor_build"
     goto :build_plain
 )
 
-rem Znajdz nazwe katalogu runtime (zmienia sie per wersja PyArmor)
 set "PYARMOR_RT="
 for /d %%D in (".pyarmor_build\pyarmor_runtime_*") do set "PYARMOR_RT=%%~nxD"
 if "!PYARMOR_RT!"=="" (
-    echo [WARN] Nie znaleziono katalogu pyarmor_runtime - buduje bez obfuskacji.
+    echo [WARN] Brak runtime PyArmor. Buduje EXE bez obfuskacji.
     if exist ".pyarmor_build" rmdir /s /q ".pyarmor_build"
     goto :build_plain
 )
-echo Znaleziono PyArmor runtime: !PYARMOR_RT!
 
-rem ── 4a. PyInstaller z obfuskowanym kodem ─────────────────────────────────────
-echo Buduje wersje przenosna z obfuskacja PyArmor...
+echo Buduje wersje przenosna z obfuskacja...
 "%VENV_PY%" -m PyInstaller ^
     --noconfirm ^
     --windowed ^
@@ -65,6 +44,9 @@ echo Buduje wersje przenosna z obfuskacja PyArmor...
     --add-data "assets;assets" ^
     --add-data "database\schema.sql;database" ^
     --add-data "sample_data;sample_data" ^
+    --collect-all ezdxf ^
+    --hidden-import app.technical_editor ^
+    --hidden-import import_export.dxf_io ^
     --add-data ".pyarmor_build\!PYARMOR_RT!;!PYARMOR_RT!" ^
     --paths ".pyarmor_build" ^
     --distpath "dist\portable" ^
@@ -75,7 +57,6 @@ if errorlevel 1 goto :failed_clean_obf
 if exist ".pyarmor_build" rmdir /s /q ".pyarmor_build"
 goto :cleanup
 
-rem ── 4b. PyInstaller bez obfuskacji (fallback) ────────────────────────────────
 :build_plain
 echo Buduje wersje przenosna bez obfuskacji...
 "%VENV_PY%" -m PyInstaller ^
@@ -86,12 +67,14 @@ echo Buduje wersje przenosna bez obfuskacji...
     --add-data "assets;assets" ^
     --add-data "database\schema.sql;database" ^
     --add-data "sample_data;sample_data" ^
+    --collect-all ezdxf ^
+    --hidden-import app.technical_editor ^
+    --hidden-import import_export.dxf_io ^
     --distpath "dist\portable" ^
     --workpath "build" ^
     main.py
 if errorlevel 1 goto :failed
 
-rem ── 5. Sprzatanie ────────────────────────────────────────────────────────────
 :cleanup
 if exist "build" rmdir /s /q "build"
 if exist "SIEKACZ9000.spec" del /q "SIEKACZ9000.spec"
@@ -101,12 +84,14 @@ for %%D in (app ui algorithms core workers import_export database tests __pycach
 if exist "__pycache__" rmdir /s /q "__pycache__"
 
 echo.
-echo Gotowe. Przenies caly folder dist\portable\SIEKACZ9000 na inny komputer i uruchom SIEKACZ9000.exe.
+echo Gotowe. Wersja przenosna:
+echo %ROOT_DIR%\dist\portable\SIEKACZ9000\SIEKACZ9000.exe
 if not "%SIEKACZ_NO_PAUSE%"=="1" pause
 exit /b 0
 
 :failed_clean_obf
 if exist ".pyarmor_build" rmdir /s /q ".pyarmor_build"
+
 :failed
 echo.
 echo Budowanie aplikacji nie powiodlo sie.

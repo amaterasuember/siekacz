@@ -1,4 +1,4 @@
-# SIEKACZ 9000 v3.1.1
+# SIEKACZ 9000 v3.1.8-beta
 
 1. Usprawniono wielowatkowe liczenie na slabszych komputerach.
 2. Dodano nowy zestaw ciekawostek o swiecie.

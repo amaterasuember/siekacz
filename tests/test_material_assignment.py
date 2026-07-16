@@ -82,7 +82,8 @@ def test_input_table_headers_use_intentional_short_labels_with_full_hints() -> N
         ]
         assert window.stock_table.horizontalHeaderItem(1).toolTip() == "Szerokość [mm]"
         assert window.parts.horizontalHeaderItem(3).toolTip() == "Długość [mm]"
-        assert window.stock_table.horizontalHeader().sectionResizeMode(1) == QHeaderView.ResizeMode.Stretch
+        assert window.stock_table.horizontalHeader().sectionResizeMode(1) == QHeaderView.ResizeMode.Fixed
+        assert window.stock_table.horizontalHeader().sectionResizeMode(4) == QHeaderView.ResizeMode.Stretch
         assert window.parts.horizontalHeader().sectionResizeMode(5) == QHeaderView.ResizeMode.Stretch
     finally:
         window.close()
@@ -148,6 +149,11 @@ def test_stock_stack_control_and_material_defaults_are_available() -> None:
         quick_actions = [action for action in stack_button.menu().actions() if action.isCheckable()]
         assert len(quick_actions) >= 10
         assert [action.text() for action in quick_actions[:3]] == ["1 płyta", "2 płyty", "3 płyty"]
+        quick_actions[2].trigger()
+        assert window._stock_cell_text(0, 5) == "3"
+        assert sum(action.isChecked() for action in quick_actions) == 1
+        stack_button = window.stock_table.cellWidget(0, 5)
+        assert stack_button.text() == "3 ▾"
         assert window._default_sheet_preset_for_material("POM C NATURALNA") == (1000.0, 2000.0)
         assert window._default_sheet_preset_for_material("PE1000 ZIELONA") == (1000.0, 2000.0)
     finally:

@@ -1,4 +1,4 @@
 from __future__ import annotations
 
 
-APP_VERSION = "3.1.1"
+APP_VERSION = "3.1.8-beta"
