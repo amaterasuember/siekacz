@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=SIEKACZ 9000
+Comment=Optymalizacja rozkroju płyt i profili
+Exec=SIEKACZ9000
+Icon=siekacz9000
+Categories=Office;Engineering;
+Terminal=false

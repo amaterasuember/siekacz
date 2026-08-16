@@ -9,7 +9,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from algorithms.two_d_vertical_segmented import optimize_2d_vertical_segmented
 from app.simple_window import _format_table_number
 from core.models import OptimizationResult, OptimizationSettings, PlacedSheetPart, Project, SheetLayout, SheetPart, SheetStock
-from workers.optimizer_worker import _attach_missing_sheet_layouts, optimize_sheet_order, optimize_sheet_project
+from workers.optimizer_worker import (
+    _attach_missing_sheet_layouts,
+    _missing_stock_for,
+    optimize_sheet_order,
+    optimize_sheet_project,
+)
 
 
 def test_mismatched_thickness_is_rejected_before_optimization() -> None:
@@ -140,6 +145,75 @@ def test_missing_boards_repeat_the_proven_real_board_pattern() -> None:
     ]
 
 
+def test_priority_board_is_consumed_before_a_larger_regular_board() -> None:
+    stock = [
+        SheetStock("standard", 10, 2000, 1000, 1),
+        SheetStock("standard", 10, 1000, 600, 1, priority=1),
+    ]
+    parts = [SheetPart("A", 400, 500, 1, "standard", 10)]
+
+    result = optimize_2d_vertical_segmented(stock, parts, kerf=3)
+
+    assert result.sheet_layouts
+    assert sorted((result.sheet_layouts[0].stock.width, result.sheet_layouts[0].stock.height)) == [600, 1000]
+
+
+def test_missing_stock_prefers_a_standard_full_board_over_a_small_remnant() -> None:
+    stock = [
+        SheetStock("standard", 10, 143, 1000, 1),
+        SheetStock("standard", 10, 1000, 2000, 5),
+    ]
+    missing = [SheetPart("A", 120, 900, 20, "standard", 10)]
+
+    virtual = _missing_stock_for(stock, missing)
+
+    assert len(virtual) == 1
+    assert sorted((virtual[0].width, virtual[0].height)) == [1000, 2000]
+    assert virtual[0].source == "missing"
+
+
+def test_missing_stock_keeps_the_largest_available_matching_profile() -> None:
+    """Virtual boards retain the real profile so the normal solver can repeat it."""
+    stock = [
+        SheetStock("PVC", 20, 1000, 2000, 1),
+        SheetStock("PVC", 20, 1500, 3000, 1),
+    ]
+    missing = [SheetPart("D", 400, 600, 16, "PVC", 20, allow_rotation=True)]
+
+    virtual = _missing_stock_for(stock, missing)
+
+    assert len(virtual) == 1
+    assert sorted((virtual[0].width, virtual[0].height)) == [1500, 3000]
+    assert virtual[0].source == "missing"
+
+
+def test_missing_run_uses_the_same_larger_profile_as_normal_packing() -> None:
+    project = Project(
+        sheet_stock=[
+            SheetStock("PVC", 20, 1000, 2000, 1, allow_rotation=True),
+            SheetStock("PVC", 20, 1500, 3000, 2, allow_rotation=True),
+        ],
+        sheet_parts=[SheetPart("D", 400, 600, 50, "PVC", 20, allow_rotation=True)],
+        settings=OptimizationSettings(
+            algorithm="Vertical Segmented Guillotine",
+            multi_core=False,
+            kerf=5,
+            margin=0,
+            min_reusable_offcut_size=80,
+            cutting_mode="hybrid",
+            optimization_mode="comfort",
+        ),
+    )
+
+    result = optimize_sheet_project(project)
+
+    assert not result.unplaced_sheet_parts
+    assert [(layout.stock.width, layout.stock.height, len(layout.parts)) for layout in result.missing_sheet_layouts] == [
+        (3000, 1500, 12)
+    ]
+    assert result.missing_sheet_layouts[0].is_guillotine_feasible
+
+
 if __name__ == "__main__":
     test_mismatched_thickness_is_rejected_before_optimization()
     test_vertical_optimizer_never_places_a_mismatched_part_directly()
@@ -149,4 +223,8 @@ if __name__ == "__main__":
     test_stack_size_cannot_exceed_the_available_board_quantity()
     test_whole_millimetre_values_have_no_float_suffix_in_tables()
     test_missing_boards_repeat_the_proven_real_board_pattern()
+    test_priority_board_is_consumed_before_a_larger_regular_board()
+    test_missing_stock_prefers_a_standard_full_board_over_a_small_remnant()
+    test_missing_stock_keeps_the_largest_available_matching_profile()
+    test_missing_run_uses_the_same_larger_profile_as_normal_packing()
     print("test_sheet_specification_safety: OK")

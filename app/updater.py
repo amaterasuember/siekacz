@@ -14,6 +14,7 @@ to run off the UI thread (see :class:`UpdateCheckWorker`).
 import json
 import logging
 import os
+import platform
 import ssl
 import subprocess
 import sys
@@ -33,7 +34,7 @@ GITHUB_OWNER = "amaterasuember"
 GITHUB_REPO = "siekacz"
 GENERIC_INSTALLER_NAME = "SIEKACZ9000_Setup.exe"
 VERSIONED_INSTALLER_PREFIX = "SIEKACZ9000_Setup_"
-ASSET_SUFFIXES = (".exe", ".msi", ".zip")
+ASSET_SUFFIXES = (".exe", ".msi", ".dmg", ".AppImage")
 
 _API_URL = "https://api.github.com/repos/{owner}/{repo}/releases/latest"
 _TIMEOUT_S = 8
@@ -48,6 +49,7 @@ class UpdateInfo:
     html_url: str         # release page
     asset_url: str        # direct installer download (may be "")
     asset_name: str = ""
+    platform_key: str = ""
 
 
 def _parse_version(text: str) -> tuple[int, ...]:
@@ -78,9 +80,46 @@ def windows_file_version(version: str) -> str:
     return ".".join(str(value) for value in (parts + [0, 0, 0, 0])[:4])
 
 
-def expected_installer_name(tag: str) -> str:
+def current_platform_key(system: str | None = None, machine: str | None = None) -> str:
+    """Return the release asset key for the running OS and CPU architecture."""
+    system_name = (system or platform.system()).strip().casefold()
+    architecture = (machine or platform.machine()).strip().casefold()
+    is_arm = architecture in {"arm64", "aarch64"} or architecture.startswith("arm")
+    if system_name.startswith("win"):
+        # The x64 build runs natively on Windows Server and through the x64
+        # compatibility layer on Windows 11 ARM.
+        return "windows-x64"
+    if system_name in {"darwin", "mac", "macos"}:
+        return "macos-arm64" if is_arm else "macos-x64"
+    if system_name.startswith("linux"):
+        return "linux-aarch64" if is_arm else "linux-x86_64"
+    return f"{system_name or 'unknown'}-{architecture or 'unknown'}"
+
+
+def expected_installer_name(tag: str, platform_key: str | None = None) -> str:
     clean_tag = str(tag or "").strip().lstrip("vV")
-    return f"{VERSIONED_INSTALLER_PREFIX}v{clean_tag}.exe"
+    target = platform_key or current_platform_key()
+    names = {
+        "windows-x64": f"SIEKACZ9000_Setup_v{clean_tag}_windows-x64.exe",
+        "windows-arm64": f"SIEKACZ9000_Setup_v{clean_tag}_windows-arm64.exe",
+        "macos-x64": f"SIEKACZ9000_v{clean_tag}_macos-x64.dmg",
+        "macos-arm64": f"SIEKACZ9000_v{clean_tag}_macos-arm64.dmg",
+        "linux-x86_64": f"SIEKACZ9000_v{clean_tag}_linux-x86_64.AppImage",
+        "linux-aarch64": f"SIEKACZ9000_v{clean_tag}_linux-aarch64.AppImage",
+    }
+    if target not in names:
+        raise ValueError(f"Brak paczki aktualizacyjnej dla platformy: {target}.")
+    return names[target]
+
+
+def expected_installer_names(tag: str, platform_key: str | None = None) -> tuple[str, ...]:
+    """Exact accepted names, including the legacy Windows release convention."""
+    target = platform_key or current_platform_key()
+    primary = expected_installer_name(tag, target)
+    if target == "windows-x64":
+        clean_tag = str(tag or "").strip().lstrip("vV")
+        return primary, f"{VERSIONED_INSTALLER_PREFIX}v{clean_tag}.exe"
+    return (primary,)
 
 
 def installer_product_version(path: str | Path) -> str:
@@ -147,25 +186,16 @@ def fetch_latest_release(owner: str = GITHUB_OWNER, repo: str = GITHUB_REPO) -> 
         return None
 
     assets = list(data.get("assets", []) or [])
-    expected_name = expected_installer_name(tag)
+    platform_key = current_platform_key()
+    expected_names = {name.casefold() for name in expected_installer_names(tag, platform_key)}
     selected = next(
-        (asset for asset in assets if str(asset.get("name") or "").casefold() == expected_name.casefold()),
+        (asset for asset in assets if str(asset.get("name") or "").casefold() in expected_names),
         None,
     )
-    if selected is None:
-        selected = next(
-            (asset for asset in assets if str(asset.get("name") or "").casefold() == GENERIC_INSTALLER_NAME.casefold()),
-            None,
-        )
-    if selected is None:
-        selected = next(
-            (
-                asset
-                for asset in assets
-                if str(asset.get("name") or "").lower().endswith(ASSET_SUFFIXES)
-            ),
-            None,
-        )
+    # Updates are executable code.  Do not silently accept a differently
+    # named .exe/.msi/.zip from the release: the publisher always uploads the
+    # version-bound filename, and accepting an arbitrary asset weakens the
+    # release identity check below.
     asset_url = str(selected.get("browser_download_url") or "") if selected else ""
     asset_name = str(selected.get("name") or "") if selected else ""
 
@@ -177,6 +207,7 @@ def fetch_latest_release(owner: str = GITHUB_OWNER, repo: str = GITHUB_REPO) -> 
         html_url=str(data.get("html_url") or ""),
         asset_url=asset_url,
         asset_name=asset_name,
+        platform_key=platform_key,
     )
 
 
@@ -208,6 +239,23 @@ def download_asset(info: UpdateInfo, progress=None) -> Path:
         target.unlink(missing_ok=True)
         raise
     return target
+
+
+def launch_downloaded_update(path: str | Path) -> None:
+    """Open the native installer/package for the current operating system."""
+    target = Path(path)
+    platform_key = current_platform_key()
+    if platform_key.startswith("windows-"):
+        os.startfile(str(target))  # type: ignore[attr-defined]
+        return
+    if platform_key.startswith("macos-"):
+        subprocess.Popen(["open", str(target)], start_new_session=True)
+        return
+    if platform_key.startswith("linux-"):
+        target.chmod(target.stat().st_mode | 0o111)
+        subprocess.Popen([str(target)], start_new_session=True)
+        return
+    raise OSError(f"Nieobsługiwany system aktualizacji: {platform_key}.")
 
 
 class UpdateCheckWorker(QObject):

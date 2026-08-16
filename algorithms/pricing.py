@@ -64,10 +64,16 @@ class JobPricing:
 
 
 def _format_cost(fmt: FormatCutMetrics, rates: PricingRates) -> FormatCost:
+    # A supplier-backed result carries the price of the exact stock board that
+    # was selected for the layout. It must override any historical manual
+    # material/thickness setting, which has no information about board format.
+    material_rate = float(getattr(fmt, "catalog_price_m2", 0.0) or 0.0)
+    if material_rate <= 0:
+        material_rate = rates.get_m2_price(fmt.material, fmt.thickness)
     return FormatCost(
         name=fmt.name,
         pieces=fmt.pieces,
-        material_cost=fmt.gross_m2 * max(0.0, rates.get_m2_price(fmt.material, fmt.thickness)),
+        material_cost=fmt.gross_m2 * max(0.0, material_rate),
         cut_cost=fmt.pieces * max(0.0, rates.per_piece),
         labor_cost=(fmt.time_s / 3600.0) * max(0.0, rates.per_hour),
     )

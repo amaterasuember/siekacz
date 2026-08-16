@@ -261,3 +261,10 @@ def test_layout_view_horizontal_orientation_keeps_height_axis_as_workflow_direct
     assert not rotated
     assert round(display_w) == 2050
     assert round(display_h) == 3050
+
+
+if __name__ == "__main__":
+    test_remnant_scoring_prefers_consolidated_reusable_second_sheet()
+    test_packs_1000mm_width_panels_into_two_vertical_strips_before_using_second_sheet()
+    test_layout_view_horizontal_orientation_keeps_height_axis_as_workflow_direction()
+    print("test_remnant_scoring: OK")

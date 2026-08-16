@@ -2,8 +2,13 @@ from __future__ import annotations
 
 import math
 import multiprocessing as mp
+import shutil
 import subprocess
 import sys
+import tempfile
+import zlib
+from collections import Counter
+from dataclasses import replace
 from functools import wraps
 from datetime import datetime
 from pathlib import Path
@@ -13,10 +18,12 @@ from PySide6.QtCore import (
     QAbstractAnimation,
     QEasingCurve,
     QEvent,
+    QFileSystemWatcher,
     QObject,
     QPoint,
     QPointF,
     QPropertyAnimation,
+    QRect,
     QRectF,
     QSequentialAnimationGroup,
     QSize,
@@ -52,6 +59,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QDoubleSpinBox,
     QFileDialog,
+    QFrame,
     QGraphicsDropShadowEffect,
     QGraphicsOpacityEffect,
     QHBoxLayout,
@@ -92,7 +100,6 @@ from app.material_catalog import (
     catalog_family_label,
     catalog_from_dicts,
     catalog_revision,
-    merge_bundled_catalog,
     read_material_catalog,
 )
 from app.theme import apply_accent_mode, apply_button_cursors, apply_native_title_bar, apply_theme
@@ -110,13 +117,40 @@ from workers.optimizer_worker import optimize_sheet_project
 import logging
 _logger = logging.getLogger(__name__)
 
-MAX_TOTAL_PARTS = 5000
+MAX_TOTAL_PARTS = 15_000
+PART_LIMIT_OVERRIDE_PIN = "1984"
 FIXED_SHEET_PRESETS: tuple[tuple[float, float], ...] = (
     (1000.0, 2000.0),
     (1250.0, 2500.0),
     (2050.0, 3050.0),
     (1500.0, 3000.0),
 )
+
+# Stock table layout is intentionally explicit. Board material is derived from
+# the active part; FORMAT is a compact per-board picker, not a global selector.
+STOCK_MATERIAL_COLUMN = 0
+STOCK_THICKNESS_COLUMN = 1
+STOCK_HEIGHT_COLUMN = 2
+STOCK_WIDTH_COLUMN = 3
+STOCK_FORMAT_COLUMN = 4
+STOCK_QUANTITY_COLUMN = 5
+STOCK_PRIORITY_COLUMN = 6
+STOCK_STACK_COLUMN = 7
+STOCK_CUT_AXIS_ROLE = int(Qt.ItemDataRole.UserRole) + 17
+STOCK_TEMPLATE_ROLE = int(Qt.ItemDataRole.UserRole) + 18
+LINK_GLOW_ROLE = int(Qt.ItemDataRole.UserRole) + 19
+CELL_ERROR_ROLE = int(Qt.ItemDataRole.UserRole) + 20
+PART_ALLOW_ROTATION_ROLE = int(Qt.ItemDataRole.UserRole) + 21
+PART_PRIORITY_ROLE = int(Qt.ItemDataRole.UserRole) + 22
+PART_LABEL_ROLE = int(Qt.ItemDataRole.UserRole) + 23
+PART_NOTES_ROLE = int(Qt.ItemDataRole.UserRole) + 24
+STOCK_ALLOW_ROTATION_ROLE = int(Qt.ItemDataRole.UserRole) + 25
+
+PART_MATERIAL_COLUMN = 0
+PART_THICKNESS_COLUMN = 1
+PART_HEIGHT_COLUMN = 2
+PART_WIDTH_COLUMN = 3
+PART_QUANTITY_COLUMN = 4
 
 
 def _format_table_number(value: object) -> str:
@@ -125,6 +159,11 @@ def _format_table_number(value: object) -> str:
         return ""
     number = safeNumber(value)
     return f"{number:g}" if number is not None else str(value)
+
+
+def _format_piece_count(value: int) -> str:
+    """Format a quantity for Polish UI without the English comma separator."""
+    return f"{int(value):,}".replace(",", " ")
 
 
 def _material_badge_spec(material: str) -> tuple[str, str, str]:
@@ -143,6 +182,10 @@ def _material_badge_spec(material: str) -> tuple[str, str, str]:
         background, foreground = "#ffffff", "#111827"
     elif "NIEBIESK" in normalized:
         background, foreground = "#2777c9", "#eff8ff"
+    elif "PP" in tokens and "SZAR" in normalized:
+        # The supplier calls the board grey, but its physical marker is the
+        # warm cream shade used on the shop floor.
+        background, foreground = "#eadfbd", "#3b3425"
     else:
         background, foreground = "#4b5f7d", "#f1f6ff"
 
@@ -162,7 +205,7 @@ def _material_badge_spec(material: str) -> tuple[str, str, str]:
         return "POM", background, foreground
     if normalized.startswith("PE"):
         return "PE", background, foreground
-    return text.split()[0][:10].upper(), "#4b5f7d", "#f1f6ff"
+    return text.split()[0][:10].upper(), background, foreground
 
 
 def _stack_icon(color: str = "#b8cdf0") -> QIcon:
@@ -1021,7 +1064,7 @@ class AboutDialog(QDialog):
 
 
 class LicenseDialog(QDialog):
-    """Read-only view of the project license (CC BY-NC-ND 4.0)."""
+    """Read-only view of the SIEKACZ 9000 EULA available from Settings."""
 
     def __init__(self, parent: QWidget) -> None:
         super().__init__(parent)
@@ -1058,6 +1101,312 @@ class LicenseDialog(QDialog):
         layout.addWidget(title)
         layout.addWidget(text, 1)
         layout.addLayout(buttons)
+
+
+class TutorialDialog(QDialog):
+    """Guided tour drawn directly over the real application controls."""
+
+    STEPS: tuple[tuple[str, str], ...] = (
+        ("1. Nowy rozkrój", "<b>Nowy rozkrój</b> czyści bieżące dane i zaczyna nowe zlecenie. Zapisane projekty pozostają bezpieczne."),
+        ("2. Materiał i grubość", "Kliknij znacznik materiału w pierwszej kolumnie. Zobaczysz tylko materiały i grubości mające cenę w aktualnym XLSX."),
+        ("3. Wpisywanie formatek", "Wprowadź wysokość, szerokość i ilość. <b>Enter</b> lub <b>Tab</b> prowadzi przez pola i tworzy następny wiersz."),
+        ("4. Podgląd CAD", "Przycisk <b>CAD</b> otwiera pliki DXF, STEP/STP i STL. Kliknij krawędź, aby zmierzyć bok; przeciągaj model, aby go obracać, albo zmierz odległość między dwoma punktami."),
+        ("5. Dostępne płyty", "Materiał i grubość formatki automatycznie dodają zgodną płytę. Format 1000 × 2000 mm jest domyślny, jeśli ma cenę. Zielona kropka priorytetu każe zużyć wskazany format jako pierwszy. Opcja <b>Inteligentny dobór formatów</b> sama porównuje wszystkie wycenione rozmiary i ich mieszanki."),
+        ("6. Kierunek długich cięć", "Kliknij szarą kropkę przy wybranym boku płyty. Niebieska kropka wymusza cięcie wzdłuż tego boku; drugie kliknięcie wraca do automatu."),
+        ("7. Sztapel", "Tutaj wybierasz liczbę identycznych płyt ciętych jednocześnie. Sztapel nie może przekraczać dostępnej liczby arkuszy."),
+        ("8. Obliczanie", "Uruchom rozkrój przyciskiem lub skrótem <b>Ctrl+Enter</b>. Program najpierw sprawdzi, czy każda formatka mieści się na zgodnej płycie."),
+        ("9. Ustawienia algorytmu", "Ustaw rzaz, tolerancję, obrót, wielordzeniowość i tryb Comfort/Sport. Rzaz powinien odpowiadać rzeczywistej pile."),
+        ("10. Projekty", "Tutaj otwierasz, kopiujesz, usuwasz i eksportujesz zapisane projekty. Zapis obejmuje również sztapel i kierunek cięcia."),
+        ("11. Zapis i eksport", "Zapisz projekt albo wybierz <b>Wyślij</b>, aby przygotować PDF, DXF, wydruk lub e-mail. Ikona oka otwiera podgląd raportu z układem, metrykami i wyceną."),
+        ("12. Cennik materiałów", "W <b>Ustawieniach</b> wczytasz cennik XLSX. Zmiany materiałów, kolorów, grubości, formatów i cen są rozpoznawane automatycznie."),
+    )
+    SPOTLIGHTS: tuple[str, ...] = (
+        "new_cut",
+        "part_material",
+        "parts_table",
+        "cad_inspection",
+        "stock_table",
+        "cut_axis",
+        "stack",
+        "calculate",
+        "settings",
+        "projects",
+        "save_send",
+        "settings",
+    )
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Samouczek — SIEKACZ 9000")
+        self.setModal(True)
+        self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setStyleSheet("background: transparent;")
+        self._step_index = 0
+        self._completed = False
+        self._pulse_value = 0.0
+        self._target_rect = QRect()
+
+        self._bubble = QFrame(self)
+        self._bubble.setObjectName("tutorialBubble")
+        self._bubble.setFixedWidth(430)
+        self._bubble.setStyleSheet(
+            """
+            QFrame#tutorialBubble {
+                background: #0d1a2c;
+                border: 1px solid #4f8fe8;
+                border-radius: 14px;
+            }
+            QLabel#tutorialStepTitle {
+                color: #ffffff;
+                font-size: 15px;
+                font-weight: 800;
+                background: transparent;
+                border: 0;
+            }
+            QLabel#tutorialStepBody {
+                color: #d7e6f8;
+                font-size: 12px;
+                background: transparent;
+                border: 0;
+            }
+            QLabel#tutorialProgress {
+                color: #8da7c7;
+                font-size: 11px;
+                background: transparent;
+                border: 0;
+            }
+            """
+        )
+        self._title = QLabel()
+        self._title.setObjectName("tutorialStepTitle")
+        self._body = QLabel()
+        self._body.setObjectName("tutorialStepBody")
+        self._body.setTextFormat(Qt.TextFormat.RichText)
+        self._body.setWordWrap(True)
+        self._progress = QLabel()
+        self._progress.setObjectName("tutorialProgress")
+        self._back = QPushButton("Wstecz")
+        self._back.setObjectName("smallButton")
+        self._next = QPushButton("Dalej")
+        self._next.setObjectName("primaryButton")
+        close = QPushButton("Zamknij")
+        close.setObjectName("smallButton")
+        self._back.clicked.connect(lambda: self._change_page(-1))
+        self._next.clicked.connect(self._next_step)
+        close.clicked.connect(self.reject)
+
+        footer = QHBoxLayout()
+        footer.addWidget(self._progress)
+        footer.addStretch(1)
+        footer.addWidget(self._back)
+        footer.addWidget(self._next)
+        footer.addWidget(close)
+
+        bubble_layout = QVBoxLayout(self._bubble)
+        bubble_layout.setContentsMargins(20, 18, 20, 16)
+        bubble_layout.setSpacing(11)
+        bubble_layout.addWidget(self._title)
+        bubble_layout.addWidget(self._body)
+        bubble_layout.addSpacing(4)
+        bubble_layout.addLayout(footer)
+
+        self._pulse = QVariantAnimation(self)
+        self._pulse.setDuration(1050)
+        self._pulse.setStartValue(0.0)
+        self._pulse.setEndValue(1.0)
+        self._pulse.setLoopCount(-1)
+        self._pulse.setEasingCurve(QEasingCurve.Type.InOutSine)
+        self._pulse.valueChanged.connect(self._set_pulse_value)
+        self._bubble_fade: QPropertyAnimation | None = None
+        self._refresh_navigation()
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        parent = self.parentWidget()
+        if parent is not None:
+            self.setGeometry(parent.frameGeometry())
+        self._refresh_navigation()
+        self._pulse.start()
+        super().showEvent(event)
+
+    def done(self, result: int) -> None:
+        self._pulse.stop()
+        super().done(result)
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802
+        if event.key() in (Qt.Key.Key_Right, Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
+            self._next_step()
+            return
+        if event.key() == Qt.Key.Key_Left:
+            self._change_page(-1)
+            return
+        super().keyPressEvent(event)
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.fillRect(self.rect(), QColor(2, 7, 16, 220))
+        target = self._target_rect
+        if target.isValid():
+            radius = max(6.0, min(11.0, target.height() / 3.0))
+            painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Clear)
+            painter.setBrush(Qt.BrushStyle.SolidPattern)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawRoundedRect(QRectF(target), radius, radius)
+            painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
+            glow = QColor(74, 149, 255, int(105 + 100 * self._pulse_value))
+            painter.setPen(QPen(glow, 3.0 + 2.0 * self._pulse_value))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRoundedRect(QRectF(target), radius, radius)
+
+            # Animated click cue makes the selected control immediately obvious.
+            cue_center = QPointF(target.left() + min(22.0, target.width() / 2), target.center().y())
+            cue_radius = 5.0 + 9.0 * self._pulse_value
+            cue = QColor(96, 165, 250, int(220 * (1.0 - self._pulse_value)))
+            painter.setPen(QPen(cue, 2.0))
+            painter.drawEllipse(cue_center, cue_radius, cue_radius)
+            painter.setBrush(QColor("#3b82f6"))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawEllipse(cue_center, 4.0, 4.0)
+        painter.end()
+
+    def _set_pulse_value(self, value: object) -> None:
+        self._pulse_value = float(value)
+        self.update()
+
+    @staticmethod
+    def _global_widget_rect(widget: QWidget | None) -> QRect:
+        if widget is None or not widget.isVisible():
+            return QRect()
+        top_left = widget.mapToGlobal(QPoint(0, 0))
+        return QRect(top_left, widget.size())
+
+    @staticmethod
+    def _global_cell_rect(table: QTableWidget, row: int, column: int) -> QRect:
+        if row < 0 or row >= table.rowCount():
+            return TutorialDialog._global_widget_rect(table)
+        rect = table.visualRect(table.model().index(row, column))
+        if not rect.isValid():
+            return TutorialDialog._global_widget_rect(table)
+        return QRect(table.viewport().mapToGlobal(rect.topLeft()), rect.size())
+
+    def _spotlight_global_rect(self, key: str) -> QRect:
+        window = self.parentWidget()
+        if window is None:
+            return QRect()
+        if key == "new_cut":
+            return self._global_widget_rect(getattr(window, "new_cut_button", None))
+        if key == "part_material":
+            table = getattr(window, "parts", None)
+            if table is not None:
+                badge = table.cellWidget(0, PART_MATERIAL_COLUMN)
+                return self._global_widget_rect(badge) if badge is not None else self._global_cell_rect(table, 0, PART_MATERIAL_COLUMN)
+        if key == "parts_table":
+            return self._global_widget_rect(getattr(window, "parts", None))
+        if key == "cad_inspection":
+            return self._global_widget_rect(getattr(window, "cad_inspection_button", None))
+        if key == "stock_table":
+            return self._global_widget_rect(getattr(window, "stock_table", None))
+        if key == "cut_axis":
+            table = getattr(window, "stock_table", None)
+            if table is not None:
+                # Point at one complete dimension cell.  A union of both cells
+                # produced a rectangular spotlight that did not match either
+                # selectable field and could not follow their rounded corners.
+                return self._global_cell_rect(table, 0, STOCK_HEIGHT_COLUMN).adjusted(2, 2, -2, -2)
+        if key == "stack":
+            table = getattr(window, "stock_table", None)
+            if table is not None:
+                control = table.cellWidget(0, STOCK_STACK_COLUMN)
+                return self._global_widget_rect(control) if control is not None else self._global_cell_rect(table, 0, STOCK_STACK_COLUMN)
+        if key == "calculate":
+            return self._global_widget_rect(getattr(window, "calculate_button", None))
+        if key == "settings":
+            return self._global_widget_rect(getattr(window, "_algo_btn", None))
+        if key == "projects":
+            return self._global_widget_rect(getattr(window, "history_tab_button", None))
+        if key == "save_send":
+            save_rect = self._global_widget_rect(getattr(window, "save_project_button", None))
+            send_rect = self._global_widget_rect(getattr(window, "send_button", None))
+            return save_rect.united(send_rect) if save_rect.isValid() else send_rect
+        if key == "send":
+            return self._global_widget_rect(getattr(window, "send_button", None))
+        return self._global_widget_rect(window.centralWidget())
+
+    def _position_bubble(self) -> None:
+        self._bubble.adjustSize()
+        bubble_size = self._bubble.sizeHint().expandedTo(QSize(430, 190))
+        self._bubble.resize(430, bubble_size.height())
+        target = self._target_rect
+        margin = 22
+        gap = 22
+        bounds = self.rect().adjusted(margin, margin, -margin, -margin)
+        candidates = (
+            QPoint(target.right() + gap, target.center().y() - self._bubble.height() // 2),
+            QPoint(target.left() - gap - self._bubble.width(), target.center().y() - self._bubble.height() // 2),
+            QPoint(target.center().x() - self._bubble.width() // 2, target.bottom() + gap),
+            QPoint(target.center().x() - self._bubble.width() // 2, target.top() - gap - self._bubble.height()),
+        )
+        position = candidates[-1]
+        padded_target = target.adjusted(-12, -12, 12, 12)
+        for candidate in candidates:
+            clamped = QPoint(
+                max(bounds.left(), min(candidate.x(), bounds.right() - self._bubble.width())),
+                max(bounds.top(), min(candidate.y(), bounds.bottom() - self._bubble.height())),
+            )
+            rect = QRect(clamped, self._bubble.size())
+            if not rect.intersects(padded_target):
+                position = clamped
+                break
+        x = max(bounds.left(), min(position.x(), bounds.right() - self._bubble.width()))
+        y = max(bounds.top(), min(position.y(), bounds.bottom() - self._bubble.height()))
+        self._bubble.move(x, y)
+        self._bubble.raise_()
+
+    def _fade_bubble_in(self) -> None:
+        effect = QGraphicsOpacityEffect(self._bubble)
+        self._bubble.setGraphicsEffect(effect)
+        animation = QPropertyAnimation(effect, b"opacity", self)
+        animation.setDuration(220)
+        animation.setStartValue(0.15)
+        animation.setEndValue(1.0)
+        animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        animation.finished.connect(lambda: self._bubble.setGraphicsEffect(None))
+        self._bubble_fade = animation
+        animation.start()
+
+    def _next_step(self) -> None:
+        if self._step_index >= len(self.STEPS) - 1:
+            self._completed = True
+            self.accept()
+            return
+        self._change_page(1)
+
+    @property
+    def completed(self) -> bool:
+        return self._completed
+
+    def _change_page(self, offset: int) -> None:
+        self._step_index = max(0, min(len(self.STEPS) - 1, self._step_index + offset))
+        self._refresh_navigation()
+
+    def _refresh_navigation(self) -> None:
+        title, body = self.STEPS[self._step_index]
+        self._title.setText(title)
+        self._body.setText(body)
+        self._progress.setText(f"Krok {self._step_index + 1} z {len(self.STEPS)}")
+        self._back.setEnabled(self._step_index > 0)
+        self._next.setText("Dalej" if self._step_index < len(self.STEPS) - 1 else "Zakończ")
+        global_rect = self._spotlight_global_rect(self.SPOTLIGHTS[self._step_index])
+        if global_rect.isValid():
+            local_top_left = self.mapFromGlobal(global_rect.topLeft())
+            self._target_rect = QRect(local_top_left, global_rect.size())
+        else:
+            self._target_rect = self.rect().adjusted(80, 80, -80, -80)
+        self._position_bubble()
+        if self.isVisible():
+            self._fade_bubble_in()
+        self.update()
 
 
 class SettingsDialog(QDialog):
@@ -1234,13 +1583,45 @@ class SendDialog(QDialog):
 
 
 class PannablePdfView(QPdfView):
-    """A PDF view with direct left-button panning for large cutting drawings."""
+    """A PDF view with cursor-anchored zoom and direct left-button panning."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._pan_origin = QPoint()
         self._is_panning = False
         self.setPageMode(QPdfView.PageMode.MultiPage)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.viewport().setCursor(Qt.CursorShape.OpenHandCursor)
+
+    def zoom_at(self, position: QPoint, factor: float) -> None:
+        """Change zoom while keeping the document point below *position* fixed."""
+        current = max(0.2, float(self.zoomFactor() or 1.0))
+        target = max(0.2, min(6.0, current * factor))
+        if abs(target - current) < 1e-9:
+            return
+        horizontal = self.horizontalScrollBar()
+        vertical = self.verticalScrollBar()
+        old_horizontal = horizontal.value()
+        old_vertical = vertical.value()
+        scale = target / current
+        self.setZoomMode(QPdfView.ZoomMode.Custom)
+        self.setZoomFactor(target)
+
+        def restore_anchor() -> None:
+            horizontal.setValue(round((old_horizontal + position.x()) * scale - position.x()))
+            vertical.setValue(round((old_vertical + position.y()) * scale - position.y()))
+
+        # QPdfView updates its scroll ranges after the zoom event returns.
+        QTimer.singleShot(0, restore_anchor)
+
+    def wheelEvent(self, event) -> None:
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            delta = event.angleDelta().y() or event.pixelDelta().y()
+            if delta:
+                self.zoom_at(event.position().toPoint(), 1.18 if delta > 0 else 1 / 1.18)
+            event.accept()
+            return
+        super().wheelEvent(event)
 
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
@@ -1284,6 +1665,7 @@ class PdfPreviewDialog(QDialog):
         self._view = PannablePdfView(self)
         self._view.setDocument(self._document)
         self._view.setZoomMode(QPdfView.ZoomMode.FitInView)
+        self._view.setToolTip("Ctrl + rolka: przybliżenie pod kursorem. Przeciągnij lewym przyciskiem, aby przesunąć dokument.")
         self._view.pageNavigator().currentPageChanged.connect(self._refresh_page_label)
 
         previous = QToolButton()
@@ -1314,6 +1696,8 @@ class PdfPreviewDialog(QDialog):
         self._page_label = QLabel()
         self._page_label.setObjectName("summaryLabel")
         self._refresh_page_label()
+        interaction_hint = QLabel("Ctrl + rolka — zoom pod kursorem · przeciągnij — przesuń")
+        interaction_hint.setObjectName("summaryLabel")
 
         close = QPushButton("Zamknij")
         close.setObjectName("smallButton")
@@ -1324,6 +1708,7 @@ class PdfPreviewDialog(QDialog):
         toolbar.addWidget(previous)
         toolbar.addWidget(next_page)
         toolbar.addWidget(self._page_label)
+        toolbar.addWidget(interaction_hint)
         toolbar.addStretch(1)
         toolbar.addWidget(zoom_out)
         toolbar.addWidget(fit)
@@ -1349,9 +1734,7 @@ class PdfPreviewDialog(QDialog):
         self._view.pageNavigator().jump(target, QPointF(), self._view.zoomFactor())
 
     def _change_zoom(self, factor: float) -> None:
-        current = max(0.2, float(self._view.zoomFactor() or 1.0))
-        self._view.setZoomMode(QPdfView.ZoomMode.Custom)
-        self._view.setZoomFactor(max(0.2, min(6.0, current * factor)))
+        self._view.zoom_at(self._view.viewport().rect().center(), factor)
 
 class SmtpConfigDialog(QDialog):
     def __init__(self, parent: QWidget) -> None:
@@ -1512,6 +1895,7 @@ class AlgorithmSettingsDialog(QDialog):
         self.setWindowTitle("Ustawienia algorytmu")
         self.setModal(True)
         self.setMinimumSize(780, 540)
+        self.tutorial_requested = False
 
         self._out: dict = dict(settings)   # will be overwritten on accept
 
@@ -1691,12 +2075,16 @@ class AlgorithmSettingsDialog(QDialog):
         self._animation_quality = QRadioButton("Jakość — animacja samuraja")
         self._animation_economy = QRadioButton("Oszczędny — kosmiczna animacja")
         animation_group = QButtonGroup(self)
-        animation_group.addButton(self._animation_quality)
-        animation_group.addButton(self._animation_economy)
-        if settings.get("animation_mode", "economy") == "economy":
-            self._animation_economy.setChecked(True)
-        else:
-            self._animation_quality.setChecked(True)
+        for animation_button in (
+            self._animation_quality,
+            self._animation_economy,
+        ):
+            animation_group.addButton(animation_button)
+        animation_mode = str(settings.get("animation_mode", "economy"))
+        {
+            "economy": self._animation_economy,
+            "quality": self._animation_quality,
+        }.get(animation_mode, self._animation_economy).setChecked(True)
 
         # ── Section 4: Silnik cięcia ─────────────────────────────────────────
         self._engine_hybrid     = QRadioButton("Hybrydowy produkcyjny (zalecany)")
@@ -1800,7 +2188,10 @@ class AlgorithmSettingsDialog(QDialog):
         display_layout.addWidget(self._section_header("Animacja obliczania"))
         display_layout.addWidget(self._animation_quality)
         display_layout.addWidget(self._animation_economy)
-        animation_hint = QLabel("Tryb oszczędny nie odtwarza filmu i ogranicza koszt renderowania interfejsu.")
+        animation_hint = QLabel(
+            "Tryb jakości pokazuje animację samuraja. Tryb oszczędny używa lekkiej "
+            "animacji generowanej przez program i nie odtwarza filmu."
+        )
         animation_hint.setObjectName("summaryLabel")
         animation_hint.setWordWrap(True)
         display_layout.addWidget(animation_hint)
@@ -1811,6 +2202,10 @@ class AlgorithmSettingsDialog(QDialog):
         catalog_layout.addWidget(self._section_header("Cennik materiałów"))
         catalog_hint = QLabel("Wczytaj aktualny cennik XLSX. Lista materiałów i dostępne grubości odświeżą się od razu.")
         catalog_hint.setObjectName("summaryLabel")
+        catalog_hint.setText(
+            "Wczytaj arkusz XLSX dostawcy. Nowy arkusz oznacza nową grupę materiałową; "
+            "program pokaże tylko przecięcia grubości i formatu z ceną za m²."
+        )
         catalog_hint.setWordWrap(True)
         catalog_layout.addWidget(catalog_hint)
         self._catalog_import_button = QPushButton("Wczytaj cennik XLSX")
@@ -1834,6 +2229,18 @@ class AlgorithmSettingsDialog(QDialog):
         engine_layout.addStretch(1)
         _add_page("Silnik", engine_page)
         nav_layout.addStretch(1)
+        self._tutorial_button = QPushButton("Samouczek")
+        self._tutorial_button.setObjectName("settingsNavTab")
+        self._tutorial_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._tutorial_button.setToolTip("Przejdź samouczek obsługi programu jeszcze raz")
+        self._tutorial_button.clicked.connect(self._request_tutorial)
+        nav_layout.addWidget(self._tutorial_button)
+        license_button = QPushButton("Licencja")
+        license_button.setObjectName("settingsNavTab")
+        license_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        license_button.setToolTip("Przeczytaj warunki licencji oprogramowania")
+        license_button.clicked.connect(lambda: LicenseDialog(self).exec())
+        nav_layout.addWidget(license_button)
 
         body = QHBoxLayout()
         body.setSpacing(14)
@@ -1848,6 +2255,10 @@ class AlgorithmSettingsDialog(QDialog):
         layout.addLayout(body, 1)
         layout.addLayout(btn_row)
         self._set_settings_page(0)
+
+    def _request_tutorial(self) -> None:
+        self.tutorial_requested = True
+        self.reject()
 
     @staticmethod
     def _section_header(text: str) -> QLabel:
@@ -1879,7 +2290,10 @@ class AlgorithmSettingsDialog(QDialog):
         self._out["kerf"] = self._kerf_spin.value()
         self._out["kerf_tolerance"] = self._current_tolerance()
         self._out["saw_feed_m_per_min"] = self._feed_spin.value()
-        self._out["animation_mode"] = "economy" if self._animation_economy.isChecked() else "quality"
+        if self._animation_quality.isChecked():
+            self._out["animation_mode"] = "quality"
+        else:
+            self._out["animation_mode"] = "economy"
 
         if self._engine_strip.isChecked():
             self._out["cutting_mode"] = "strip"
@@ -2001,15 +2415,28 @@ class CutInfoDialog(QDialog):
 
         self._rate_m2_dict = {}
         self._rate_m2_labels: dict[str, str] = {}
+        catalog_rates: dict[str, tuple[float, float]] = {}
+        for fmt in s.formats:
+            rate = float(getattr(fmt, "catalog_price_m2", 0.0) or 0.0)
+            if rate <= 0:
+                continue
+            key = f"{fmt.material}|{float(getattr(fmt, 'thickness', 0.0) or 0.0):g}"
+            total, area = catalog_rates.get(key, (0.0, 0.0))
+            catalog_rates[key] = (total + rate * fmt.gross_m2, area + fmt.gross_m2)
         for mat, thickness in materials:
             price_key = f"{mat}|{thickness:g}"
             setting_key = f"price_per_m2_{mat}_{thickness:g}"
-            val = float(repositories.get_setting(
+            catalog_total, catalog_area = catalog_rates.get(price_key, (0.0, 0.0))
+            catalog_rate = catalog_total / catalog_area if catalog_area > 0 else 0.0
+            val = catalog_rate if catalog_rate > 0 else float(repositories.get_setting(
                 setting_key,
                 repositories.get_setting(f"price_per_m2_{mat}", repositories.get_setting("price_per_m2", 0.0)),
             ))
             sp = _rate_spin(val)
             sp.setSuffix(" zł/m²")
+            if catalog_rate > 0:
+                sp.setReadOnly(True)
+                sp.setToolTip("Cena pochodzi z dokładnie użytej płyty w katalogu XLSX.")
             self._rate_m2_dict[price_key] = sp
             self._rate_m2_labels[price_key] = f"{mat} · {thickness:g} mm" if thickness > 0 else mat
 
@@ -2060,12 +2487,19 @@ class CutInfoDialog(QDialog):
         self._table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
         self._table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         hdr = self._table.horizontalHeader()
-        column_widths = (270, 50, 78, 108, 112, 100, 70, 112, 90, 104, 108)
-        for c, width in enumerate(column_widths):
-            hdr.setSectionResizeMode(c, QHeaderView.ResizeMode.Fixed)
-            self._table.setColumnWidth(c, width)
+        # The former fixed widths squeezed the middle measurements while the
+        # final cost column absorbed all spare space.  Keep the description
+        # readable, then distribute the remaining columns evenly.
+        self._table.setColumnWidth(0, 250)
+        hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+        # The last (cost) column has a value and currency.  A 100 px minimum
+        # avoids clipping it in the default-size metrics window while the
+        # remaining space is still divided evenly between numeric columns.
+        hdr.setMinimumSectionSize(100)
+        for c in range(1, len(self._COLS)):
+            hdr.setSectionResizeMode(c, QHeaderView.ResizeMode.Stretch)
             self._table.horizontalHeaderItem(c).setToolTip(self._COLS[c])
-        hdr.setSectionResizeMode(len(self._COLS) - 1, QHeaderView.ResizeMode.Stretch)
+        self._table.horizontalHeaderItem(0).setToolTip(self._COLS[0])
 
         # ── Time-model explanation ───────────────────────────────────────────
         close_btn = QPushButton("Zamknij")
@@ -2274,6 +2708,7 @@ class PartsTableWidget(QTableWidget):
     """QTableWidget that emits files_dropped when CSV/XLSX files are dragged onto it."""
 
     files_dropped = Signal(list)
+    paste_requested = Signal(str)
 
     _ACCEPTED_SUFFIXES = (".csv", ".xlsx")
 
@@ -2312,24 +2747,183 @@ class PartsTableWidget(QTableWidget):
             return
         super().dropEvent(event)
 
+    def keyPressEvent(self, event) -> None:  # type: ignore[override]
+        if event.matches(QKeySequence.StandardKey.Paste):
+            self.paste_requested.emit(QApplication.clipboard().text())
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+
+class StockTableWidget(QTableWidget):
+    """Stock grid with a click target for the cut-direction dot."""
+
+    cut_axis_clicked = Signal(int, int)
+    paste_requested = Signal(str)
+
+    def mousePressEvent(self, event) -> None:  # type: ignore[override]
+        index = self.indexAt(event.position().toPoint())
+        if (
+            event.button() == Qt.MouseButton.LeftButton
+            and index.isValid()
+            and index.column() in (STOCK_HEIGHT_COLUMN, STOCK_WIDTH_COLUMN)
+        ):
+            rect = self.visualRect(index)
+            if event.position().x() <= rect.left() + 22:
+                self.cut_axis_clicked.emit(index.row(), index.column())
+                event.accept()
+                return
+        super().mousePressEvent(event)
+
+    def keyPressEvent(self, event) -> None:  # type: ignore[override]
+        if event.matches(QKeySequence.StandardKey.Paste):
+            self.paste_requested.emit(QApplication.clipboard().text())
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
 
 class PartsTableDelegate(QStyledItemDelegate):
     quantity_enter_pressed = Signal(int)
     cell_navigation_requested = Signal(int, int, bool)
 
+
+    def setModelData(self, editor, model, index):
+        from PySide6.QtWidgets import QComboBox
+        if isinstance(editor, QComboBox) and index.column() == PART_THICKNESS_COLUMN:
+            text = editor.currentText()
+            if text == "Własna...":
+                # Do not write "Własna..." to the model! Keep previous data or clear it.
+                return
+            model.setData(index, text)
+            return
+        super().setModelData(editor, model, index)
+
     def createEditor(self, parent: QWidget, option, index):
+        if index.column() == PART_THICKNESS_COLUMN:
+            table = self.parent()
+            material_item = table.item(index.row(), PART_MATERIAL_COLUMN)
+            material = material_item.text().strip() if material_item else ""
+            main_window = table.window()
+            
+            thicknesses = []
+            catalog_thicknesses = []
+            if material and hasattr(main_window, "_catalog_entries_for"):
+                entries = main_window._catalog_entries_for(material)
+                catalog_thicknesses = [entry.thickness for entry in entries if entry.thickness > 0]
+                thicknesses = catalog_thicknesses[:]
+
+            # A selected supplier material is authoritative: do not leak an
+            # old/manual thickness from another row into its priced list.
+            # Reusing row values remains useful only for a material absent
+            # from the uploaded catalogue.
+            if material and not catalog_thicknesses:
+                for r in range(table.rowCount()):
+                    mat_item = table.item(r, PART_MATERIAL_COLUMN)
+                    thk_item = table.item(r, PART_THICKNESS_COLUMN)
+                    if mat_item and mat_item.text().strip().casefold() == material.casefold():
+                        if thk_item:
+                            try:
+                                val = float(thk_item.text().replace(",", "."))
+                                if val > 0:
+                                    thicknesses.append(val)
+                            except ValueError:
+                                pass
+                                
+            thicknesses = sorted(list(set(thicknesses)))
+                
+            from PySide6.QtWidgets import QComboBox
+            editor = QComboBox(parent)
+            self._style_opaque_editor(editor)
+            # The text field is editable from the first opening.  Previously
+            # selecting "Własna..." changed this flag only after Qt had already
+            # committed and closed the delegate, forcing the user to open the
+            # cell a second time.
+            editor.setEditable(True)
+            
+            line_edit = editor.lineEdit()
+            if line_edit:
+                line_edit.setFrame(False)
+                line_edit.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+                line_edit.setProperty("tableRow", index.row())
+                line_edit.setProperty("tableColumn", index.column())
+                line_edit.installEventFilter(self)
+            
+            editor.setMinimumHeight(28)
+            editor.view().setMinimumWidth(120)
+            editor.setProperty("tableRow", index.row())
+            editor.setProperty("tableColumn", index.column())
+            
+            if thicknesses:
+                editor.addItems([f"{t:g}" for t in thicknesses])
+                
+            if not catalog_thicknesses:
+                editor.addItem("Własna...")
+            
+            def on_currentIndexChanged(idx):
+                if editor.currentText() == "Własna...":
+                    # A direct prompt is reliable even when Qt closes a combo
+                    # delegate immediately after selecting an item.
+                    def choose_value() -> None:
+                        initial = _number(index.data(), 1.0)
+                        value, accepted = QInputDialog.getDouble(
+                            table.window(),
+                            "Własna grubość",
+                            "Grubość [mm]:",
+                            max(0.01, initial),
+                            0.01,
+                            1000.0,
+                            3,
+                        )
+                        if accepted:
+                            window = table.window()
+                            if hasattr(window, "_set_part_material_thickness"):
+                                window._set_part_material_thickness(row=index.row(), material=material, thickness=value)
+                            else:  # pragma: no cover - standalone delegate use
+                                model.setData(index, f"{value:g}")
+
+                    QTimer.singleShot(0, choose_value)
+                    
+            editor.currentIndexChanged.connect(on_currentIndexChanged)
+            
+            return editor
+            
         editor = super().createEditor(parent, option, index)
         if isinstance(editor, QLineEdit):
-            editor.setObjectName("tableEditor")
+            self._style_opaque_editor(editor)
             editor.setFrame(False)
             editor.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
             editor.setMinimumHeight(28)
             editor.setProperty("tableRow", index.row())
             editor.setProperty("tableColumn", index.column())
+            editor.installEventFilter(self)
         return editor
 
+    @staticmethod
+    def _style_opaque_editor(editor: QWidget) -> None:
+        """Keep an active cell editor visually separate from the cell beneath it."""
+        editor.setObjectName("tableCellEditor")
+        editor.setAutoFillBackground(True)
+        editor.setStyleSheet(
+            """
+            QLineEdit#tableCellEditor, QComboBox#tableCellEditor {
+                background: #0b1524;
+                color: #eef6ff;
+                border: 1px solid #3d82d8;
+                border-radius: 5px;
+                padding: 0 6px;
+            }
+            QComboBox#tableCellEditor::drop-down { border: 0; width: 18px; }
+            QComboBox#tableCellEditor QAbstractItemView {
+                background: #0b1524;
+                color: #eef6ff;
+                selection-background-color: #1c4f8c;
+            }
+            """
+        )
+
     def updateEditorGeometry(self, editor: QWidget, option, index) -> None:
-        editor.setGeometry(option.rect.adjusted(4, 4, -4, -4))
+        editor.setGeometry(option.rect)
 
     def eventFilter(self, editor: QWidget, event) -> bool:
         if (
@@ -2337,16 +2931,18 @@ class PartsTableDelegate(QStyledItemDelegate):
             and isinstance(editor, QLineEdit)
             and event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Tab, Qt.Key.Key_Backtab)
         ):
-            row = int(editor.property("tableRow") or 0)
-            col = int(editor.property("tableColumn") or -1)
-            if col not in (1, 2, 3, 4):
+            from PySide6.QtWidgets import QComboBox
+            real_editor = editor.parent() if isinstance(editor.parent(), QComboBox) else editor
+            row = int(real_editor.property("tableRow") or 0)
+            col = int(real_editor.property("tableColumn") or -1)
+            if col not in (PART_THICKNESS_COLUMN, PART_HEIGHT_COLUMN, PART_WIDTH_COLUMN, PART_QUANTITY_COLUMN):
                 return super().eventFilter(editor, event)
             backwards = event.key() == Qt.Key.Key_Backtab or bool(
                 event.key() == Qt.Key.Key_Tab
                 and event.modifiers() & Qt.KeyboardModifier.ShiftModifier
             )
-            self.commitData.emit(editor)
-            self.closeEditor.emit(editor, QAbstractItemDelegate.EndEditHint.NoHint)
+            self.commitData.emit(real_editor)
+            self.closeEditor.emit(real_editor, QAbstractItemDelegate.EndEditHint.NoHint)
             QTimer.singleShot(
                 0,
                 lambda row=row, col=col, backwards=backwards: self.cell_navigation_requested.emit(
@@ -2362,10 +2958,36 @@ class PartsTableDelegate(QStyledItemDelegate):
 class StockTableDelegate(QStyledItemDelegate):
     cell_navigation_requested = Signal(int, int, bool)
 
+    def paint(self, painter: QPainter, option, index) -> None:
+        super().paint(painter, option, index)
+        if index.column() not in (STOCK_HEIGHT_COLUMN, STOCK_WIDTH_COLUMN):
+            return
+        active = bool(index.data(STOCK_CUT_AXIS_ROLE))
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        color = QColor("#3b82f6" if active else "#73839a")
+        painter.setPen(QPen(color, 1.2))
+        painter.setBrush(color if active else QColor("#263449"))
+        center = QPointF(option.rect.left() + 11.0, option.rect.center().y())
+        painter.drawEllipse(center, 4.0, 4.0)
+        painter.restore()
+
     def createEditor(self, parent: QWidget, option, index):
         editor = super().createEditor(parent, option, index)
         if isinstance(editor, QLineEdit):
-            editor.setObjectName("tableEditor")
+            editor.setObjectName("tableCellEditor")
+            editor.setAutoFillBackground(True)
+            editor.setStyleSheet(
+                """
+                QLineEdit#tableCellEditor {
+                    background: #0b1524;
+                    color: #eef6ff;
+                    border: 1px solid #3d82d8;
+                    border-radius: 5px;
+                    padding: 0 6px;
+                }
+                """
+            )
             editor.setFrame(False)
             editor.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
             editor.setMinimumHeight(28)
@@ -2374,7 +2996,7 @@ class StockTableDelegate(QStyledItemDelegate):
         return editor
 
     def updateEditorGeometry(self, editor: QWidget, option, index) -> None:
-        editor.setGeometry(option.rect.adjusted(4, 4, -4, -4))
+        editor.setGeometry(option.rect)
 
     def eventFilter(self, editor: QWidget, event) -> bool:
         if (
@@ -2469,6 +3091,12 @@ class SimpleCutWindow(QMainWindow):
         self._calculation_worker: CalculationWorker | None = None
         self._is_calculating = False
         self._is_exporting = False
+        self._last_smart_stock_mode = False
+        self._tutorial_completed = bool(repositories.get_setting("tutorial_completed", False))
+        # The administrator PIN only grants a per-window override.  It is not
+        # persisted in projects or settings, so reopening the program restores
+        # the normal 15,000-piece safety limit.
+        self._part_limit_override_authorized = False
         self._notification_tray: QSystemTrayIcon | None = None
         if sys.platform.startswith("win") and QSystemTrayIcon.isSystemTrayAvailable():
             self._notification_tray = QSystemTrayIcon(self.windowIcon(), self)
@@ -2540,6 +3168,16 @@ class SimpleCutWindow(QMainWindow):
 
         self._last_thickness = 18.0
         self._material_catalog: list[MaterialCatalogEntry] = []
+        # Excel often saves by replacing the workbook.  Watching the file and
+        # its folder catches both regular and atomic saves; the timer waits for
+        # a complete workbook before it is parsed again.
+        self._catalog_watcher = QFileSystemWatcher(self)
+        self._catalog_refresh_timer = QTimer(self)
+        self._catalog_refresh_timer.setSingleShot(True)
+        self._catalog_refresh_timer.setInterval(900)
+        self._catalog_refresh_timer.timeout.connect(self._refresh_uploaded_material_catalog_if_changed)
+        self._catalog_watcher.fileChanged.connect(self._schedule_material_catalog_refresh)
+        self._catalog_watcher.directoryChanged.connect(self._schedule_material_catalog_refresh)
         self.material_selector = QComboBox()
         self.material_selector.setObjectName("premiumInput")
         self.material_selector.setEditable(True)
@@ -2581,13 +3219,13 @@ class SimpleCutWindow(QMainWindow):
         self.catalog_thickness_selector.currentIndexChanged.connect(self._apply_catalog_selection)
         self._load_material_catalog()
 
-        self.stock_table = QTableWidget(0, 6)
+        self.stock_table = StockTableWidget(0, 8)
         self.stock_table.setObjectName("partsTable")
-        self.stock_table.setHorizontalHeaderLabels(["GR.", "SZER.", "WYS.", "SZT.", "MATERIAŁ", ""])
-        for column, hint in enumerate(("Grubość [mm]", "Szerokość [mm]", "Wysokość [mm]", "Ilość sztuk", "Materiał płyty", "Sztapel płyt")):
+        self.stock_table.setHorizontalHeaderLabels(["MATERIAŁ", "GRUBOŚĆ", "WYSOKOŚĆ", "SZEROKOŚĆ", "FORMAT", "ILOŚĆ", "", ""])
+        for column, hint in enumerate(("Materiał przypisany z formatki", "Grubość [mm]", "Wysokość [mm]", "Szerokość [mm]", "Szybki format dostępny dla materiału", "Ilość sztuk", "Oznacz płytę jako priorytetową", "Sztapel płyt")):
             self.stock_table.horizontalHeaderItem(column).setToolTip(hint)
-        self.stock_table.horizontalHeaderItem(5).setIcon(_stack_icon())
-        self.stock_table.horizontalHeaderItem(5).setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.stock_table.horizontalHeaderItem(STOCK_STACK_COLUMN).setIcon(_stack_icon())
+        self.stock_table.horizontalHeaderItem(STOCK_STACK_COLUMN).setTextAlignment(Qt.AlignmentFlag.AlignCenter)
         self.stock_table.setAlternatingRowColors(True)
         self.stock_table.verticalHeader().setVisible(False)
         self.stock_table.setShowGrid(False)
@@ -2596,6 +3234,8 @@ class SimpleCutWindow(QMainWindow):
         self.stock_delegate = StockTableDelegate(self.stock_table)
         self.stock_delegate.cell_navigation_requested.connect(self._handle_stock_nav_key)
         self.stock_table.setItemDelegate(self.stock_delegate)
+        self.stock_table.cut_axis_clicked.connect(self._toggle_stock_cut_axis)
+        self.stock_table.paste_requested.connect(self._paste_stock_rows)
         self.stock_table.setEditTriggers(
             QTableWidget.EditTrigger.DoubleClicked
             | QTableWidget.EditTrigger.SelectedClicked
@@ -2605,22 +3245,53 @@ class SimpleCutWindow(QMainWindow):
         self.stock_table.setMinimumHeight(126)
         self.stock_table.verticalHeader().setDefaultSectionSize(34)
         self.stock_table.horizontalHeader().setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        # Keep the material badge and stack selector compact. The width column
-        # expands to use the remaining table space instead of leaving a gap.
-        for column, width in enumerate((72, 100, 100, 80, 150, 52)):
+        # A dense table is easier to scan when every field has the same visual
+        # rhythm.  Do not stretch the material field: it made the remaining
+        # columns unreadably narrow.
+        stock_column_widths = {
+            # Qt uses logical pixels.  At Windows 125% DPI the previous total
+            # was visibly too narrow and left unused table space on the right.
+            STOCK_MATERIAL_COLUMN: 96,
+            STOCK_THICKNESS_COLUMN: 78,
+            STOCK_HEIGHT_COLUMN: 86,
+            STOCK_WIDTH_COLUMN: 90,
+            STOCK_FORMAT_COLUMN: 76,
+            # Keep a real safety margin for the table frame and scroll-bar:
+            # equal-to-viewport width still causes a horizontal bar in Qt.
+            STOCK_QUANTITY_COLUMN: 52,
+            STOCK_PRIORITY_COLUMN: 28,
+            STOCK_STACK_COLUMN: 64,
+        }
+        for column in range(self.stock_table.columnCount()):
             self.stock_table.horizontalHeader().setSectionResizeMode(column, QHeaderView.ResizeMode.Fixed)
-            self.stock_table.setColumnWidth(column, width)
-        self.stock_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+            self.stock_table.setColumnWidth(column, stock_column_widths[column])
+        # All descriptive columns keep their readable fixed widths.  The last,
+        # icon-based stack column absorbs only the genuinely unused remainder,
+        # so the row reaches the right border without squeezing any heading.
+        self.stock_table.horizontalHeader().setSectionResizeMode(
+            STOCK_STACK_COLUMN, QHeaderView.ResizeMode.Stretch
+        )
+        self.stock_table.setIconSize(QSize(14, 14))
 
-        self._add_stock_row({"thickness": 18.0, "width": 2000, "height": 1000, "quantity": 1})
+        initial_material = self._selected_material_name(self._last_thickness)
+        initial_format = self._default_catalog_format(initial_material, self._last_thickness)
+        self._add_stock_row({
+            "material": initial_material,
+            "thickness": self._last_thickness,
+            "width": initial_format.width if initial_format is not None else 1000,
+            "height": initial_format.height if initial_format is not None else 2000,
+            "quantity": 1,
+            "template": True,
+        })
 
-        self.parts = PartsTableWidget(0, 6)
+        self.parts = PartsTableWidget(0, 5)
         self.parts.setObjectName("partsTable")
-        self.parts.setHorizontalHeaderLabels(["#", "GR.", "SZER.", "DŁ.", "SZT.", "MATERIAŁ"])
-        for column, hint in enumerate(("Numer", "Grubość [mm]", "Szerokość [mm]", "Długość [mm]", "Ilość sztuk", "Materiał formatki")):
+        self.parts.setHorizontalHeaderLabels(["MATERIAŁ", "GRUBOŚĆ", "WYSOKOŚĆ", "SZEROKOŚĆ", "ILOŚĆ"])
+        for column, hint in enumerate(("Najpierw wybierz materiał", "Grubość [mm]", "Wysokość [mm]", "Szerokość [mm]", "Ilość sztuk")):
             self.parts.horizontalHeaderItem(column).setToolTip(hint)
         self.parts.setToolTip("")
         self.parts.files_dropped.connect(self._on_parts_files_dropped)
+        self.parts.paste_requested.connect(self._paste_part_rows)
         self.parts.setAlternatingRowColors(True)
         self.parts.verticalHeader().setVisible(False)
         self.parts.setShowGrid(False)
@@ -2641,10 +3312,10 @@ class SimpleCutWindow(QMainWindow):
         )
         self.parts.verticalHeader().setDefaultSectionSize(36)
         self.parts.horizontalHeader().setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        for column, width in enumerate((34, 72, 100, 100, 80, 160)):
-            self.parts.horizontalHeader().setSectionResizeMode(column, QHeaderView.ResizeMode.Fixed)
-            self.parts.setColumnWidth(column, width)
-        self.parts.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
+        # Parts are the primary data-entry grid: five equal columns always
+        # fill the whole available viewport, without a horizontal scrollbar.
+        for column in range(self.parts.columnCount()):
+            self.parts.horizontalHeader().setSectionResizeMode(column, QHeaderView.ResizeMode.Stretch)
 
 
         self.warning = QLabel("")
@@ -2660,9 +3331,6 @@ class SimpleCutWindow(QMainWindow):
         self._parts_redo_stack: list[tuple] = []
         self._parts_undo_suspended = False
         self._parts_current_snapshot: tuple | None = None
-        self._last_thickness = 18.0
-        self._last_thickness = 18.0
-
         self._build_toolbar()
         self._build_layout()
         self._load_example_rows()
@@ -2939,7 +3607,13 @@ class SimpleCutWindow(QMainWindow):
         self.history_tab_button.setCheckable(True)
         self.history_tab_button.clicked.connect(lambda: self._select_page(1))
 
-        for button in (self.cut_tab_button, self.history_tab_button):
+        self.tutorial_button = QPushButton("SAMOUCZEK")
+        self.tutorial_button.setObjectName("topbarTutorial")
+        self.tutorial_button.setToolTip("Otwórz pełny samouczek obsługi programu")
+        self.tutorial_button.clicked.connect(self.open_tutorial)
+        self.tutorial_button.setVisible(not self._tutorial_completed)
+
+        for button in (self.cut_tab_button, self.history_tab_button, self.tutorial_button):
             button.setCursor(Qt.CursorShape.PointingHandCursor)
             button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
             layout.addWidget(button)
@@ -2952,6 +3626,7 @@ class SimpleCutWindow(QMainWindow):
         self.new_cut_button.clicked.connect(self.new_cut)
 
         save_btn = QPushButton("Zapisz projekt")
+        self.save_project_button = save_btn
         save_btn.setObjectName("topbarButton")
         save_btn.setToolTip("Zapisz aktualny projekt")
         save_btn.clicked.connect(self.save_project)
@@ -2986,6 +3661,18 @@ class SimpleCutWindow(QMainWindow):
 
         self._update_algo_btn()
         return header
+
+    def open_tutorial(self) -> None:
+        dialog = TutorialDialog(self)
+        result = dialog.exec()
+        if result == QDialog.DialogCode.Accepted and dialog.completed:
+            self._tutorial_completed = True
+            repositories.set_setting("tutorial_completed", True)
+            self.tutorial_button.hide()
+            self.statusBar().showMessage(
+                "Samouczek ukończony. Możesz uruchomić go ponownie w Ustawieniach.",
+                6000,
+            )
 
     @safe_ui_action("Nie udało się przełączyć widoku.")
     def _select_page(self, index: int) -> None:
@@ -3082,6 +3769,8 @@ class SimpleCutWindow(QMainWindow):
         self.min_reusable_offcut.setValue(min_offcut)
         self.stock_table.setRowCount(0)
         self._add_stock_row({"width": "", "height": "", "quantity": ""})
+        if hasattr(self, "smart_stock_checkbox"):
+            self.smart_stock_checkbox.setChecked(False)
         self.parts.clearSelection()
         self.parts.setRowCount(0)
         self._reset_parts_undo_history()
@@ -3287,14 +3976,23 @@ class SimpleCutWindow(QMainWindow):
         collapsed = not sizes or sizes[0] <= 12
         if collapsed:
             width = max(640, int(getattr(self, "_input_panel_width", 675)))
-            splitter.setSizes([width, max(1, total - width)])
+            target = [width, max(1, total - width)]
             self.input_panel_toggle.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowLeft))
             self.input_panel_toggle.setToolTip("Schowaj panel wprowadzania danych")
         else:
             self._input_panel_width = sizes[0]
-            splitter.setSizes([0, total])
+            target = [0, total]
             self.input_panel_toggle.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowRight))
             self.input_panel_toggle.setToolTip("Pokaż panel wprowadzania danych")
+        animation = QVariantAnimation(self)
+        animation.setDuration(220)
+        animation.setStartValue((sizes or [0, total])[0])
+        animation.setEndValue(target[0])
+        animation.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        animation.valueChanged.connect(lambda value: splitter.setSizes([int(value), max(1, total - int(value))]))
+        animation.finished.connect(animation.deleteLater)
+        self._input_panel_animation = animation
+        animation.start()
 
     def _zoom_controls(self) -> QWidget:
         controls = QWidget()
@@ -3322,12 +4020,6 @@ class SimpleCutWindow(QMainWindow):
         zoom_out.setToolTip("Oddal podgląd  (−)")
         zoom_out.setFixedSize(_BTN, _BTN)
         zoom_out.clicked.connect(self.layout_view.zoom_out)
-
-        zoom_fit = QPushButton("Fit")
-        zoom_fit.setObjectName("zoomButton")
-        zoom_fit.setToolTip("Dopasuj cały rozkrój do widoku")
-        zoom_fit.setFixedSize(_BTN, _BTN)
-        zoom_fit.clicked.connect(lambda: self.layout_view.fit(reset_zoom=True))
 
         # Zoom percent indicator + click-to-reset (T1-6).  Uses a QLabel
         # (not QPushButton) to avoid the default QPushButton padding that
@@ -3367,7 +4059,7 @@ class SimpleCutWindow(QMainWindow):
             "}"
         )
 
-        for button in (info_btn, zoom_in, zoom_out, zoom_fit):
+        for button in (info_btn, zoom_in, zoom_out):
             button.setCursor(Qt.CursorShape.PointingHandCursor)
             layout.addWidget(button)
         layout.addWidget(self._zoom_percent_label)
@@ -3375,8 +4067,8 @@ class SimpleCutWindow(QMainWindow):
         # Listen for zoom changes from the view itself.
         self.layout_view.zoomChanged.connect(self._on_zoom_changed)
 
-        # 4 buttons × 44 + label 24 + 4 gaps × 5 + 2 × 8 margin
-        controls.setFixedSize(_BTN + 16, 4 * _BTN + 24 + 4 * 5 + 16)
+        # 3 buttons × 44 + label 24 + 3 gaps × 5 + 2 × 8 margin
+        controls.setFixedSize(_BTN + 16, 3 * _BTN + 24 + 3 * 5 + 16)
         return controls
 
     def _on_zoom_changed(self, percent: int) -> None:
@@ -3727,30 +4419,22 @@ class SimpleCutWindow(QMainWindow):
         layout = QVBoxLayout(section)
         layout.setContentsMargins(16, 13, 16, 13)
         layout.setSpacing(7)
-        layout.addWidget(self._section_title("Dostępne płyty"))
-
-        catalog_fields = QVBoxLayout()
-        catalog_fields.setSpacing(6)
-
-        material_row = QHBoxLayout()
-        material_row.setSpacing(8)
-        material_label = QLabel("Materiał")
-        material_label.setObjectName("compactLabel")
-        material_label.setFixedWidth(58)
-
-        material_row.addWidget(material_label)
-        material_row.addWidget(self.material_selector, 1)
-
-        thickness_row = QHBoxLayout()
-        thickness_row.setSpacing(8)
-        thickness_label = QLabel("Grubość")
-        thickness_label.setObjectName("compactLabel")
-        thickness_label.setFixedWidth(58)
-        thickness_row.addWidget(thickness_label)
-        thickness_row.addWidget(self.catalog_thickness_selector, 1)
-
-        catalog_fields.addLayout(material_row)
-        catalog_fields.addLayout(thickness_row)
+        self.smart_stock_checkbox = QCheckBox("Inteligentny dobór formatów")
+        self.smart_stock_checkbox.setObjectName("smartStockMode")
+        self.smart_stock_checkbox.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.smart_stock_checkbox.setMinimumHeight(30)
+        self.smart_stock_checkbox.setToolTip(
+            "Program sprawdzi wszystkie wycenione formaty dla materiału i grubości oraz formaty "
+            "wpisane ręcznie w tabeli, a następnie sam dobierze liczbę płyt każdego rozmiaru "
+            "tak, aby ograniczyć odpad."
+        )
+        self.smart_stock_checkbox.toggled.connect(self._smart_stock_mode_changed)
+        title_row = QHBoxLayout()
+        title_row.setSpacing(10)
+        title_row.addWidget(self._section_title("Dostępne płyty"))
+        title_row.addStretch(1)
+        title_row.addWidget(self.smart_stock_checkbox)
+        layout.addLayout(title_row)
 
         add_stock = QPushButton("+ Dodaj")
         add_stock.setObjectName("smallButton")
@@ -3770,7 +4454,7 @@ class SimpleCutWindow(QMainWindow):
         add_stock.setMinimumWidth(94)
         remove_stock.setMinimumWidth(82)
         undo_stock.setMinimumWidth(92)
-        self.stock_buttons.extend([add_stock, remove_stock, undo_stock, import_dxf])
+        self.stock_buttons.extend([add_stock, remove_stock, undo_stock, import_dxf, self.smart_stock_checkbox])
 
 
 
@@ -3782,40 +4466,110 @@ class SimpleCutWindow(QMainWindow):
         stock_buttons.addWidget(import_dxf)
         stock_buttons.addStretch(1)
 
-        quick_label = QLabel("Szybki format")
-        quick_label.setObjectName("compactLabel")
-        self.recent_sheet_formats.setMinimumWidth(220)
-        format_row = QHBoxLayout()
-        format_row.setSpacing(8)
-        format_row.addWidget(quick_label)
-        format_row.addWidget(self.recent_sheet_formats, 1)
-
-        layout.addLayout(catalog_fields)
         layout.addLayout(stock_buttons)
-        layout.addLayout(format_row)
         layout.addWidget(self.stock_table)
         return section
+
+    def _smart_stock_mode_changed(self, enabled: bool) -> None:
+        self._last_smart_stock_mode = bool(enabled)
+        if enabled:
+            self.statusBar().showMessage(
+                "Tryb inteligentny: program dobierze mieszankę formatów cennikowych i płyt wpisanych ręcznie.",
+                7000,
+            )
+        else:
+            self.statusBar().showMessage("Tryb ręczny: używane są formaty i ilości wpisane w tabeli.", 5000)
 
     def _load_material_catalog(self) -> None:
         stored = repositories.get_setting("material_catalog", [])
         entries = catalog_from_dicts(stored) if isinstance(stored, list) else []
+        source = str(repositories.get_setting("material_catalog_source", "") or "")
+        uploaded_path = Path(str(repositories.get_setting("material_catalog_path", "") or ""))
+        stored_revision = str(repositories.get_setting("material_catalog_revision", "") or "")
+
+        # A selected workbook stays active.  When it is edited later, the
+        # changed revision reloads it on startup so new sheets, rows, formats
+        # and priced intersections automatically reach the selector.
+        if source == "uploaded" and uploaded_path.is_file():
+            try:
+                revision = catalog_revision(uploaded_path)
+                if revision != stored_revision:
+                    entries = read_material_catalog(uploaded_path)
+                    repositories.set_setting("material_catalog", [item.to_dict() for item in entries])
+                    repositories.set_setting("material_catalog_revision", revision)
+            except Exception as exc:
+                _logger.warning("Could not refresh material catalog %s: %s", uploaded_path, exc)
         bundled = _resource_path("sample_data/material_catalog.xlsx")
         if bundled.exists():
             try:
                 bundled_entries = read_material_catalog(bundled)
                 bundled_revision = catalog_revision(bundled)
-                stored_revision = str(repositories.get_setting("material_catalog_bundle_revision", "") or "")
-                if not entries:
+                bundled_stored_revision = str(repositories.get_setting("material_catalog_bundle_revision", "") or "")
+                # The bundled Boral matrix is authoritative: no price at an
+                # intersection means no available board. Do not retain entries
+                # from an older bundled workbook.
+                if not entries or (source != "uploaded" and bundled_revision != bundled_stored_revision):
                     entries = bundled_entries
-                elif bundled_revision != stored_revision:
-                    entries = merge_bundled_catalog(entries, bundled_entries)
-                if entries and bundled_revision != stored_revision:
+                if entries and source != "uploaded" and bundled_revision != bundled_stored_revision:
                     repositories.set_setting("material_catalog", [item.to_dict() for item in entries])
                     repositories.set_setting("material_catalog_bundle_revision", bundled_revision)
+                    repositories.set_setting("material_catalog_source", "bundled")
+                    repositories.set_setting("material_catalog_revision", bundled_revision)
             except Exception as exc:
                 _logger.warning("Nie udało się wczytać katalogu materiałów: %s", exc)
         self._material_catalog = entries
         self._populate_material_selector()
+        self._watch_uploaded_material_catalog()
+
+    def _uploaded_material_catalog_path(self) -> Path | None:
+        if str(repositories.get_setting("material_catalog_source", "") or "") != "uploaded":
+            return None
+        value = str(repositories.get_setting("material_catalog_path", "") or "").strip()
+        return Path(value) if value else None
+
+    def _watch_uploaded_material_catalog(self) -> None:
+        """Watch the active supplier workbook and its parent directory."""
+        if not hasattr(self, "_catalog_watcher"):
+            return
+        watched = self._catalog_watcher.files() + self._catalog_watcher.directories()
+        if watched:
+            self._catalog_watcher.removePaths(watched)
+        path = self._uploaded_material_catalog_path()
+        if path is None:
+            return
+        watch_paths = [str(path.parent)]
+        if path.is_file():
+            watch_paths.insert(0, str(path))
+        self._catalog_watcher.addPaths(watch_paths)
+
+    def _schedule_material_catalog_refresh(self, *_ignored) -> None:
+        if hasattr(self, "_catalog_refresh_timer"):
+            self._catalog_refresh_timer.start()
+
+    def _refresh_uploaded_material_catalog_if_changed(self) -> bool:
+        """Apply a valid changed XLSX revision and rebuild material controls."""
+        path = self._uploaded_material_catalog_path()
+        try:
+            if path is None or not path.is_file():
+                return False
+            revision = catalog_revision(path)
+            stored_revision = str(repositories.get_setting("material_catalog_revision", "") or "")
+            if revision == stored_revision:
+                return False
+            entries = read_material_catalog(path)
+            if not entries:
+                raise ValueError("Arkusz nie zawiera dostępnych płyt z ceną za m².")
+        except Exception as exc:
+            _logger.warning("Nie udało się odświeżyć cennika materiałów: %s", exc)
+            return False
+
+        self._material_catalog = entries
+        repositories.set_setting("material_catalog", [item.to_dict() for item in entries])
+        repositories.set_setting("material_catalog_revision", revision)
+        self._populate_material_selector()
+        self._watch_uploaded_material_catalog()
+        self.statusBar().showMessage(f"Cennik XLSX odświeżony: {len(entries)} pozycji płytowych.", 6000)
+        return True
 
     def _populate_material_selector(self) -> None:
         if not hasattr(self, "material_selector"):
@@ -3835,6 +4589,21 @@ class SimpleCutWindow(QMainWindow):
         index = self.material_selector.findData(previous)
         if index >= 0:
             self.material_selector.setCurrentIndex(index)
+        elif self.material_selector.count() > 0 and not previous_text:
+            # A real catalogue must always provide a deterministic material
+            # context.  Starting at ``-1`` left the first part unassigned and
+            # later thickness edits could no longer be linked to a board.
+            default_thickness = float(getattr(self, "_last_thickness", 18.0) or 18.0)
+            compatible_family = next(
+                (
+                    catalog_family_label(entry)
+                    for entry in self._material_catalog
+                    if abs(entry.thickness - default_thickness) < 0.001
+                ),
+                "",
+            )
+            compatible_index = self.material_selector.findData(compatible_family)
+            self.material_selector.setCurrentIndex(compatible_index if compatible_index >= 0 else 0)
         else:
             self.material_selector.setCurrentIndex(-1)
             if previous_text:
@@ -3868,6 +4637,7 @@ class SimpleCutWindow(QMainWindow):
             return
         material = str(self.material_selector.currentData() or "")
         current = self.catalog_thickness_selector.currentData()
+        current_thickness = current.thickness if isinstance(current, MaterialCatalogEntry) else current
         entries = sorted(
             (item for item in self._material_catalog if catalog_family_label(item) == material),
             key=lambda item: (item.thickness, item.product_name.casefold(), item.gross_price_m2),
@@ -3877,20 +4647,40 @@ class SimpleCutWindow(QMainWindow):
         if not entries:
             self.catalog_thickness_selector.addItem(f"{self._last_thickness:g} mm", None)
         else:
+            by_thickness: dict[float, list[MaterialCatalogEntry]] = {}
             for entry in entries:
-                label = f"{entry.thickness:g} mm · {entry.gross_price_m2:.2f} zł/m²"
-                self.catalog_thickness_selector.addItem(label, entry)
+                by_thickness.setdefault(entry.thickness, []).append(entry)
+            for thickness, variants in sorted(by_thickness.items()):
+                prices = [entry.gross_price_m2 for entry in variants if entry.gross_price_m2 > 0]
+                formats = {(entry.width, entry.height) for entry in variants if entry.width > 0 and entry.height > 0}
+                price_label = f"od {min(prices):.2f} zł/m²" if prices else "cena w formacie"
+                suffix = f" · {len(formats)} formaty" if len(formats) > 1 else ""
+                self.catalog_thickness_selector.addItem(f"{thickness:g} mm · {price_label}{suffix}", thickness)
                 row = self.catalog_thickness_selector.count() - 1
-                self.catalog_thickness_selector.setItemData(row, entry.product_name, Qt.ItemDataRole.ToolTipRole)
-        index = self.catalog_thickness_selector.findData(current)
+                self.catalog_thickness_selector.setItemData(
+                    row,
+                    "Wybierz format płyty, aby zastosować dokładną cenę za m².",
+                    Qt.ItemDataRole.ToolTipRole,
+                )
+        index = self.catalog_thickness_selector.findData(current_thickness)
         self.catalog_thickness_selector.setCurrentIndex(index if index >= 0 else 0)
+        selected_thickness = safeNumber(self.catalog_thickness_selector.currentData())
+        if selected_thickness is not None and selected_thickness > 0:
+            self._last_thickness = float(selected_thickness)
         self.catalog_thickness_selector.blockSignals(False)
         self._thickness_completer.setModel(self.catalog_thickness_selector.model())
         self._apply_catalog_selection()
+        self._refresh_recent_sheet_formats()
 
     def _selected_catalog_entry(self) -> MaterialCatalogEntry | None:
-        entry = self.catalog_thickness_selector.currentData()
-        return entry if isinstance(entry, MaterialCatalogEntry) else None
+        selected = self.catalog_thickness_selector.currentData()
+        if isinstance(selected, MaterialCatalogEntry):
+            return selected
+        try:
+            thickness = float(selected)
+        except (TypeError, ValueError):
+            return None
+        return self._default_catalog_format(self._selected_material_name(thickness), thickness)
 
     def _selected_material_name(self, thickness: float) -> str:
         material = str(self.material_selector.currentData() or "").strip()
@@ -3899,13 +4689,37 @@ class SimpleCutWindow(QMainWindow):
             material = typed
         return material
 
+    def _catalog_entries_for(self, material: str) -> list[MaterialCatalogEntry]:
+        material = material.strip().casefold()
+        return [entry for entry in self._material_catalog if catalog_family_label(entry).casefold() == material]
+
+    def _default_catalog_format(self, material: str, thickness: float) -> MaterialCatalogEntry | None:
+        entries = [
+            entry for entry in self._catalog_entries_for(material)
+            if abs(entry.thickness - thickness) < 0.001 and entry.width > 0 and entry.height > 0
+        ]
+        # 1000 × 2000 is the production default whenever that exact format is
+        # priced for the selected variant.  Falling back to the smallest width
+        # previously selected narrow 620 × 2000 stock for POM-C.
+        return min(
+            entries,
+            key=lambda entry: (
+                0 if {round(entry.width, 3), round(entry.height, 3)} == {1000.0, 2000.0} else 1,
+                entry.width * entry.height,
+                entry.width,
+                entry.height,
+                entry.gross_price_m2,
+            ),
+            default=None,
+        )
+
     @staticmethod
     def _default_sheet_preset_for_material(material: str) -> tuple[float, float] | None:
         normalized = str(material or "").upper().replace("-", " ")
         tokens = normalized.split()
         if "PA6" in normalized or "POM" in normalized or ("PE" in normalized and "1000" in normalized):
             return 1000.0, 2000.0
-        return None
+        return 1000.0, 2000.0
 
     def _apply_catalog_selection(self, *_ignored) -> None:
         if not hasattr(self, "stock_table"):
@@ -3928,28 +4742,32 @@ class SimpleCutWindow(QMainWindow):
         if last_row >= 0:
             self.stock_table.blockSignals(True)
             try:
-                item = self.stock_table.item(last_row, 0)
+                item = self.stock_table.item(last_row, STOCK_THICKNESS_COLUMN)
                 if item is None:
                     item = self._stock_item("")
-                    self.stock_table.setItem(last_row, 0, item)
+                    self.stock_table.setItem(last_row, STOCK_THICKNESS_COLUMN, item)
                 item.setText(f"{thickness:g}")
-                material_item = self.stock_table.item(last_row, 4)
+                material_item = self.stock_table.item(last_row, STOCK_MATERIAL_COLUMN)
                 if material_item is None:
                     material_item = self._stock_item("")
-                    self.stock_table.setItem(last_row, 4, material_item)
+                    self.stock_table.setItem(last_row, STOCK_MATERIAL_COLUMN, material_item)
                 material_item.setText(material)
                 material_item.setData(Qt.ItemDataRole.UserRole, False)
-                self._set_material_badge(self.stock_table, last_row, 4, material)
+                self._set_material_badge(self.stock_table, last_row, STOCK_MATERIAL_COLUMN, material, editable=False)
                 preset = self._default_sheet_preset_for_material(material)
-                current_width = self._stock_cell_text(last_row, 1).strip()
-                current_height = self._stock_cell_text(last_row, 2).strip()
+                current_width = self._stock_cell_text(last_row, STOCK_HEIGHT_COLUMN).strip()
+                current_height = self._stock_cell_text(last_row, STOCK_WIDTH_COLUMN).strip()
                 if preset and (
                     not current_width
                     or not current_height
                     or {current_width, current_height} == {"1000", "2000"}
                 ):
-                    self._set_stock_cell_text(last_row, 1, preset[0])
-                    self._set_stock_cell_text(last_row, 2, preset[1])
+                    self._set_stock_cell_text(last_row, STOCK_HEIGHT_COLUMN, preset[0])
+                    self._set_stock_cell_text(last_row, STOCK_WIDTH_COLUMN, preset[1])
+                if entry is not None and entry.width > 0 and entry.height > 0:
+                    self._set_stock_cell_text(last_row, STOCK_HEIGHT_COLUMN, entry.width)
+                    self._set_stock_cell_text(last_row, STOCK_WIDTH_COLUMN, entry.height)
+                self._set_stock_format_selector(last_row)
             finally:
                 self.stock_table.blockSignals(False)
         # A draft part row follows the active board context automatically.
@@ -3957,25 +4775,25 @@ class SimpleCutWindow(QMainWindow):
         # 8 mm parts without accidental rewrites.
         if hasattr(self, "parts") and self.parts.rowCount() > 0:
             draft_row = self.parts.rowCount() - 1
-            width_item = self.parts.item(draft_row, 2)
-            height_item = self.parts.item(draft_row, 3)
+            width_item = self.parts.item(draft_row, PART_WIDTH_COLUMN)
+            height_item = self.parts.item(draft_row, PART_HEIGHT_COLUMN)
             is_draft = not (width_item.text().strip() if width_item else "") and not (
                 height_item.text().strip() if height_item else ""
             )
             if is_draft:
                 self.parts.blockSignals(True)
                 try:
-                    part_thickness = self.parts.item(draft_row, 1)
+                    part_thickness = self.parts.item(draft_row, PART_THICKNESS_COLUMN)
                     if part_thickness is None:
                         part_thickness = QTableWidgetItem()
-                        self.parts.setItem(draft_row, 1, part_thickness)
+                        self.parts.setItem(draft_row, PART_THICKNESS_COLUMN, part_thickness)
                     part_thickness.setText(f"{thickness:g}")
-                    part_material = self.parts.item(draft_row, 5)
+                    part_material = self.parts.item(draft_row, PART_MATERIAL_COLUMN)
                     if part_material is None:
                         part_material = QTableWidgetItem()
-                        self.parts.setItem(draft_row, 5, part_material)
+                        self.parts.setItem(draft_row, PART_MATERIAL_COLUMN, part_material)
                     part_material.setText(material)
-                    self._set_material_badge(self.parts, draft_row, 5, material)
+                    self._set_material_badge(self.parts, draft_row, PART_MATERIAL_COLUMN, material)
                 finally:
                     self.parts.blockSignals(False)
         if entry is not None:
@@ -4009,18 +4827,16 @@ class SimpleCutWindow(QMainWindow):
             return
         self._material_catalog = entries
         repositories.set_setting("material_catalog", [item.to_dict() for item in entries])
-        bundled = _resource_path("sample_data/material_catalog.xlsx")
-        if bundled.exists():
-            try:
-                repositories.set_setting("material_catalog_bundle_revision", catalog_revision(bundled))
-            except OSError:
-                pass
         repositories.set_setting("material_catalog_path", path)
+        repositories.set_setting("material_catalog_source", "uploaded")
+        repositories.set_setting("material_catalog_revision", catalog_revision(path))
         self._populate_material_selector()
+        self._watch_uploaded_material_catalog()
+        family_count = len({catalog_family_label(item) for item in entries})
         QMessageBox.information(
             self,
             "Cennik zaktualizowany",
-            f"Wczytano {len(entries)} pozycji płytowych. Rury, wałki i profile zostały pominięte.",
+            "Cennik zaktualizowano pomyślnie.",
         )
 
     def _parameter_row(self, icon: str, label: str, editor: QWidget, unit: str) -> QWidget:
@@ -4066,18 +4882,58 @@ class SimpleCutWindow(QMainWindow):
                     values.append({"width": width, "height": height})
         return values[:8]
 
+    def _catalog_sheet_format_presets(self) -> list[MaterialCatalogEntry]:
+        """Return only priced formats for the current material/thickness."""
+        if not getattr(self, "_material_catalog", None):
+            return []
+        material = ""
+        thickness: float | None = None
+        if hasattr(self, "material_selector"):
+            material = str(self.material_selector.currentData() or "").strip()
+        if hasattr(self, "catalog_thickness_selector"):
+            selected = self.catalog_thickness_selector.currentData()
+            if isinstance(selected, MaterialCatalogEntry):
+                thickness = selected.thickness
+            else:
+                thickness = safeNumber(selected)
+        if not material or thickness is None or thickness <= 0:
+            active_material, active_thickness = self._active_part_context()
+            material = material or active_material
+            thickness = thickness if thickness and thickness > 0 else active_thickness
+        if not material or thickness is None or thickness <= 0:
+            return []
+        by_format: dict[tuple[float, float], MaterialCatalogEntry] = {}
+        for entry in self._catalog_entries_for(material):
+            if abs(entry.thickness - float(thickness)) >= 0.001 or entry.width <= 0 or entry.height <= 0:
+                continue
+            key = (float(entry.width), float(entry.height))
+            previous = by_format.get(key)
+            if previous is None or entry.gross_price_m2 < previous.gross_price_m2:
+                by_format[key] = entry
+        return sorted(by_format.values(), key=lambda entry: (entry.width, entry.height, entry.gross_price_m2))
+
     def _refresh_recent_sheet_formats(self) -> None:
         if not hasattr(self, "recent_sheet_formats"):
             return
         self.recent_sheet_formats.blockSignals(True)
         self.recent_sheet_formats.clear()
         self.recent_sheet_formats.addItem("Wybierz / dodaj format", "")
-        for width, height in FIXED_SHEET_PRESETS:
-            self.recent_sheet_formats.addItem(f"{width:.0f} x {height:.0f} mm  • preset", f"{width}|{height}")
-        for item in self._recent_sheet_format_values():
-            width = item["width"]
-            height = item["height"]
-            self.recent_sheet_formats.addItem(f"{width:.0f} x {height:.0f} mm", f"{width}|{height}")
+        catalog_formats = self._catalog_sheet_format_presets()
+        if catalog_formats:
+            for entry in catalog_formats:
+                self.recent_sheet_formats.addItem(
+                    f"{entry.width:.0f} x {entry.height:.0f} mm · {entry.gross_price_m2:.2f} zł/m²",
+                    f"{entry.width}|{entry.height}",
+                )
+        elif not getattr(self, "_material_catalog", None):
+            # Generic projects have no supplier pricing, so retain the manual
+            # production presets and recently used formats.
+            for width, height in FIXED_SHEET_PRESETS:
+                self.recent_sheet_formats.addItem(f"{width:.0f} x {height:.0f} mm · preset", f"{width}|{height}")
+            for item in self._recent_sheet_format_values():
+                width = item["width"]
+                height = item["height"]
+                self.recent_sheet_formats.addItem(f"{width:.0f} x {height:.0f} mm", f"{width}|{height}")
         self.recent_sheet_formats.blockSignals(False)
 
     def _remember_sheet_formats(self, stocks: list[SheetStock]) -> None:
@@ -4118,39 +4974,391 @@ class SimpleCutWindow(QMainWindow):
         item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         return item
 
-    def _material_badge_choices(self, current_material: str) -> list[str]:
+    def _material_badge_choices(self, table: QTableWidget, current_material: str) -> list[str]:
         choices = {catalog_family_label(entry) for entry in self._material_catalog}
-        if current_material.strip():
+        if current_material.strip() and current_material.strip() != "-":
             choices.add(current_material.strip())
         return sorted(choices, key=str.casefold)
 
-    def _set_row_material(self, table: QTableWidget, row: int, column: int, material: str) -> None:
+    def _set_row_material(
+        self,
+        table: QTableWidget,
+        row: int,
+        column: int,
+        material: str,
+        *,
+        sync_stock: bool = True,
+    ) -> None:
         if row < 0 or row >= table.rowCount():
             return
         item = table.item(row, column)
         if item is None:
+            from PySide6.QtWidgets import QTableWidgetItem
             item = QTableWidgetItem()
+            from PySide6.QtCore import Qt
             item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             table.setItem(row, column, item)
         item.setText(material)
+        from PySide6.QtCore import Qt
         item.setData(Qt.ItemDataRole.UserRole, False)
-        self._set_material_badge(table, row, column, material)
-        if table is self.parts:
-            self._record_parts_state()
+        self._set_material_badge(table, row, column, material, editable=table is self.parts)
+        if hasattr(self, "parts") and table is self.parts:
+            if sync_stock:
+                self._sync_stock_with_parts()
+            else:
+                self._refresh_linked_pair_glows()
+            if hasattr(self, "_record_parts_state"):
+                self._record_parts_state()
 
-    def _set_material_badge(self, table: QTableWidget, row: int, column: int, material: str) -> None:
+    @staticmethod
+    def _linked_pair_key(material: object, thickness: object) -> tuple[str, float] | None:
+        """Return the exact material/thickness identity shared by both tables."""
+        material_text = str(material or "").strip()
+        thickness_value = safeNumber(thickness)
+        if not material_text or material_text == "-" or thickness_value is None or thickness_value <= 0:
+            return None
+        return material_text.casefold(), round(float(thickness_value), 4)
+
+    @staticmethod
+    def _linked_pair_color(key: tuple[str, float]) -> QColor:
+        """Choose a stable muted accent without Python's randomized hash()."""
+        palette = (
+            "#60a5fa",
+            "#34d399",
+            "#f59e0b",
+            "#a78bfa",
+            "#f472b6",
+            "#22d3ee",
+            "#fb7185",
+            "#a3e635",
+        )
+        token = f"{key[0]}|{key[1]:g}".encode("utf-8")
+        return QColor(palette[zlib.crc32(token) % len(palette)])
+
+    def _apply_link_background(self, item: QTableWidgetItem | None) -> None:
+        if item is None:
+            return
+        if bool(item.data(CELL_ERROR_ROLE)):
+            item.setBackground(QBrush(QColor(127, 29, 29, 96)))
+            return
+        color_name = str(item.data(LINK_GLOW_ROLE) or "")
+        if not color_name:
+            item.setBackground(QBrush())
+            return
+        color = QColor(color_name)
+        color.setAlpha(14 if self.current_theme() == "dark" else 20)
+        item.setBackground(QBrush(color))
+
+    def _refresh_linked_pair_glows(self) -> None:
+        """Tint only material/thickness pairs present in parts and stock."""
+        if not hasattr(self, "parts") or not hasattr(self, "stock_table"):
+            return
+
+        part_keys: set[tuple[str, float]] = set()
+        for row in range(self.parts.rowCount()):
+            height = self.parts.item(row, PART_HEIGHT_COLUMN)
+            width = self.parts.item(row, PART_WIDTH_COLUMN)
+            if not ((height and height.text().strip()) or (width and width.text().strip())):
+                continue
+            material = self.parts.item(row, PART_MATERIAL_COLUMN)
+            thickness = self.parts.item(row, PART_THICKNESS_COLUMN)
+            key = self._linked_pair_key(
+                material.text() if material else "",
+                thickness.text() if thickness else "",
+            )
+            if key is not None:
+                part_keys.add(key)
+
+        stock_keys: set[tuple[str, float]] = set()
+        for row in range(self.stock_table.rowCount()):
+            key = self._linked_pair_key(
+                self._stock_cell_text(row, STOCK_MATERIAL_COLUMN),
+                self._stock_cell_text(row, STOCK_THICKNESS_COLUMN),
+            )
+            if key is not None:
+                stock_keys.add(key)
+        linked_keys = part_keys & stock_keys
+
+        tables = (
+            (self.parts, PART_MATERIAL_COLUMN, PART_THICKNESS_COLUMN),
+            (self.stock_table, STOCK_MATERIAL_COLUMN, STOCK_THICKNESS_COLUMN),
+        )
+        previous_signal_states = [table.signalsBlocked() for table, _, _ in tables]
+        try:
+            for table, _, _ in tables:
+                table.blockSignals(True)
+            for table, material_column, thickness_column in tables:
+                for row in range(table.rowCount()):
+                    material_item = table.item(row, material_column)
+                    thickness_item = table.item(row, thickness_column)
+                    key = self._linked_pair_key(
+                        material_item.text() if material_item else "",
+                        thickness_item.text() if thickness_item else "",
+                    )
+                    if table is self.parts:
+                        height = table.item(row, PART_HEIGHT_COLUMN)
+                        width = table.item(row, PART_WIDTH_COLUMN)
+                        if not ((height and height.text().strip()) or (width and width.text().strip())):
+                            key = None
+                    color = self._linked_pair_color(key) if key in linked_keys else None
+                    color_name = color.name() if color is not None else None
+                    for column in range(table.columnCount()):
+                        item = table.item(row, column)
+                        if item is None:
+                            continue
+                        item.setData(LINK_GLOW_ROLE, color_name)
+                        self._apply_link_background(item)
+
+                    badge = table.cellWidget(row, material_column)
+                    if badge is not None:
+                        base_style = badge.property("linkedPairBaseStyle")
+                        if not isinstance(base_style, str):
+                            base_style = badge.styleSheet()
+                            badge.setProperty("linkedPairBaseStyle", base_style)
+                        if color is None:
+                            badge.setStyleSheet(base_style)
+                        else:
+                            neutral_border = "border: 1px solid rgba(255, 255, 255, 0.18);"
+                            linked_border = (
+                                "border: 1px solid "
+                                f"rgba({color.red()}, {color.green()}, {color.blue()}, 0.62);"
+                            )
+                            badge.setStyleSheet(
+                                "/* linked-pair */\n" + base_style.replace(neutral_border, linked_border)
+                            )
+        finally:
+            for (table, _, _), blocked in zip(tables, previous_signal_states):
+                table.blockSignals(blocked)
+        self.parts.viewport().update()
+        self.stock_table.viewport().update()
+
+    def _active_part_context(self) -> tuple[str, float]:
+        """Return the latest usable part material/thickness without touching older boards."""
+        if not hasattr(self, "parts"):
+            return "", float(getattr(self, "_last_thickness", 18.0) or 18.0)
+        selected_rows = sorted({index.row() for index in self.parts.selectedIndexes()})
+        rows = list(reversed(selected_rows)) + list(range(self.parts.rowCount() - 1, -1, -1))
+        seen: set[int] = set()
+        for row in rows:
+            if row in seen:
+                continue
+            seen.add(row)
+            material_item = self.parts.item(row, PART_MATERIAL_COLUMN)
+            thickness_item = self.parts.item(row, PART_THICKNESS_COLUMN)
+            material = material_item.text().strip() if material_item else ""
+            try:
+                thickness = float((thickness_item.text() if thickness_item else "").replace(",", "."))
+            except ValueError:
+                continue
+            if material and material != "-" and thickness > 0:
+                return material, thickness
+        return "", float(getattr(self, "_last_thickness", 18.0) or 18.0)
+
+    def _material_supports_thickness(self, material: str, thickness: float) -> bool:
+        """Whether *material* can safely be used for this catalogue thickness."""
+        material = str(material or "").strip()
+        if not material or material == "-":
+            return False
+        if not self._material_catalog:
+            return True
+        entries = self._catalog_entries_for(material)
+        # Manually typed materials which are outside the supplier catalogue
+        # remain valid; catalogue families, however, must use a priced variant.
+        return not entries or any(abs(entry.thickness - thickness) < 0.001 for entry in entries)
+
+    def _infer_part_material(self, row: int, thickness: float) -> str:
+        """Resolve an omitted material deterministically, never from a random board."""
+        # The nearest previous part is the strongest context for fast data
+        # entry: new rows normally continue the same material family.
+        for candidate_row in range(min(row - 1, self.parts.rowCount() - 1), -1, -1):
+            item = self.parts.item(candidate_row, PART_MATERIAL_COLUMN)
+            material = item.text().strip() if item else ""
+            if self._material_supports_thickness(material, thickness):
+                return material
+
+        selected = self._selected_material_name(thickness)
+        if self._material_supports_thickness(selected, thickness):
+            return selected
+
+        families = sorted(
+            {
+                catalog_family_label(entry)
+                for entry in self._material_catalog
+                if abs(entry.thickness - thickness) < 0.001
+            },
+            key=str.casefold,
+        )
+        return families[0] if len(families) == 1 else ""
+
+    def _set_missing_part_material_state(self, row: int, missing: bool) -> None:
+        item = self.parts.item(row, PART_MATERIAL_COLUMN)
+        if item is not None:
+            item.setData(CELL_ERROR_ROLE, missing)
+            self._apply_link_background(item)
+            item.setToolTip("Najpierw wybierz materiał formatki." if missing else "")
+        badge = self.parts.cellWidget(row, PART_MATERIAL_COLUMN)
+        if isinstance(badge, QToolButton):
+            if missing:
+                badge.setToolTip("Najpierw wybierz materiał. Bez niego formatka nie zostanie połączona z płytą.")
+                badge.setStyleSheet(
+                    "QToolButton { background: rgba(127,29,29,0.72); color: #fee2e2;"
+                    " border: 1px solid #ef4444; border-radius: 7px;"
+                    " font-size: 10px; font-weight: 700; padding: 3px 5px; }"
+                )
+
+    def _ensure_part_material(self, row: int, thickness: float) -> str:
+        item = self.parts.item(row, PART_MATERIAL_COLUMN)
+        material = item.text().strip() if item else ""
+        if material and material != "-":
+            self._set_missing_part_material_state(row, False)
+            return material
+        inferred = self._infer_part_material(row, thickness)
+        if inferred:
+            self.parts.blockSignals(True)
+            try:
+                if item is None:
+                    item = QTableWidgetItem()
+                    item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                    self.parts.setItem(row, PART_MATERIAL_COLUMN, item)
+                item.setText(inferred)
+                self._set_material_badge(self.parts, row, PART_MATERIAL_COLUMN, inferred)
+            finally:
+                self.parts.blockSignals(False)
+            return inferred
+        self._set_missing_part_material_state(row, True)
+        return ""
+
+    def _choose_part_thickness(self, row: int, material: str, source_menu: QMenu | None = None) -> None:
+        """Material is selected first; immediately offer its available thicknesses."""
+        if source_menu is not None:
+            source_menu.hide()
+        # Commit the material immediately so the row and its generated board
+        # stay visibly linked while the thickness menu is open.
+        self._set_row_material(
+            self.parts,
+            row,
+            PART_MATERIAL_COLUMN,
+            material,
+            sync_stock=False,
+        )
+        entries = self._catalog_entries_for(material)
+        choices = sorted({float(entry.thickness) for entry in entries if entry.thickness > 0})
+        if not choices:
+            QTimer.singleShot(0, lambda: self._prompt_part_thickness(row, material))
+            return
+        current_item = self.parts.item(row, PART_THICKNESS_COLUMN)
+        current_value = safeNumber(current_item.text() if current_item else "")
+        current_is_valid = current_value is not None and any(
+            abs(current_value - value) < 0.001 for value in choices
+        )
+        if current_is_valid:
+            # The old numeric value is also a priced thickness of the newly
+            # selected material, so the pair is already complete and safe.
+            self._sync_stock_with_parts()
+        else:
+            self.parts.blockSignals(True)
+            try:
+                if current_item is None:
+                    current_item = QTableWidgetItem()
+                    self.parts.setItem(row, PART_THICKNESS_COLUMN, current_item)
+                current_item.setText("")
+            finally:
+                self.parts.blockSignals(False)
+        chooser = QMenu(self)
+        chooser.setTitle(f"{material} — wybierz grubość")
+        for thickness in choices:
+            action = chooser.addAction(f"{thickness:g} mm")
+            action.triggered.connect(
+                lambda _checked=False, value=thickness: self._set_part_material_thickness(row, material, value)
+            )
+        if not entries:
+            chooser.addSeparator()
+            custom_action = chooser.addAction("Własna grubość...")
+            custom_action.triggered.connect(
+                lambda _checked=False: self._prompt_part_thickness(row, material)
+            )
+        thickness_index = self.parts.model().index(row, PART_THICKNESS_COLUMN)
+        thickness_rect = self.parts.visualRect(thickness_index)
+        position = (
+            self.parts.viewport().mapToGlobal(thickness_rect.bottomLeft())
+            if thickness_rect.isValid()
+            else self.mapToGlobal(self.rect().center())
+        )
+        # popup() keeps the main event loop responsive; exec() would turn a
+        # simple material click into a nested blocking loop.
+        self._part_thickness_menu = chooser
+        chooser.aboutToHide.connect(chooser.deleteLater)
+        QTimer.singleShot(0, lambda: chooser.popup(position))
+
+    def _prompt_part_thickness(self, row: int, material: str) -> None:
+        """Apply a manual thickness directly from the first material menu."""
+        current_item = self.parts.item(row, PART_THICKNESS_COLUMN)
+        current = _number(current_item.text() if current_item else "", 1.0)
+        value, accepted = QInputDialog.getDouble(
+            self,
+            "Własna grubość",
+            f"Grubość dla {material} [mm]:",
+            max(0.01, current),
+            0.01,
+            1000.0,
+            3,
+        )
+        if accepted:
+            self._set_part_material_thickness(row, material, value)
+
+    def _set_part_material_thickness(self, row: int, material: str, thickness: float) -> None:
+        if row < 0 or row >= self.parts.rowCount():
+            return
+        self.parts.blockSignals(True)
+        try:
+            thickness_item = self.parts.item(row, PART_THICKNESS_COLUMN)
+            if thickness_item is None:
+                thickness_item = QTableWidgetItem()
+                self.parts.setItem(row, PART_THICKNESS_COLUMN, thickness_item)
+            thickness_item.setText(f"{thickness:g}")
+            self._set_row_material(self.parts, row, PART_MATERIAL_COLUMN, material)
+        finally:
+            self.parts.blockSignals(False)
+        self._last_thickness = thickness
+        self._sync_stock_with_parts()
+        self._record_parts_state()
+        QTimer.singleShot(0, lambda row=row: self._focus_part_cell(row, PART_HEIGHT_COLUMN))
+
+    def _set_material_badge(
+        self, table: QTableWidget, row: int, column: int, material: str, *, editable: bool | None = None
+    ) -> None:
+        if editable is None:
+            editable = table is getattr(self, "parts", None)
         label, background, foreground = _material_badge_spec(material)
         badge = QToolButton()
         badge.setText(label)
         badge.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
         badge.setToolTip(material or "Materiał nie został wybrany.")
         badge.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        if not editable:
+            badge.setPopupMode(QToolButton.ToolButtonPopupMode.DelayedPopup)
+            badge.setEnabled(False)
+            badge.setToolTip(material or "Materiał zostanie przypisany z formatki.")
+            badge.setStyleSheet(
+                "QToolButton {"
+                f" background: {background}; color: {foreground};"
+                " border: 1px solid rgba(255, 255, 255, 0.18); border-radius: 7px;"
+                " font-size: 10px; font-weight: 700; padding: 3px 5px; text-align: center;"
+                "}"
+            )
+            table.setCellWidget(row, column, badge)
+            return
         menu = QMenu(badge)
-        empty_action = menu.addAction("-  Brak przypisania")
-        empty_action.setCheckable(True)
-        empty_action.setChecked(not material.strip())
-        empty_action.triggered.connect(lambda _checked=False: self._set_row_material(table, row, column, ""))
-        choices = self._material_badge_choices(material)
+        from PySide6.QtGui import QActionGroup
+        group = QActionGroup(menu)
+        group.setExclusive(True)
+        if not self._material_catalog:
+            empty_action = menu.addAction("-  Brak przypisania")
+            empty_action.setCheckable(True)
+            empty_action.setActionGroup(group)
+            empty_action.setChecked(not material.strip() or material.strip() == "-")
+            empty_action.triggered.connect(lambda _checked=False, m=menu: (m.hide(), self._set_row_material(table, row, column, "")))
+        choices = self._material_badge_choices(table, material)
         if choices:
             menu.addSeparator()
         search = QLineEdit()
@@ -4160,13 +5368,21 @@ class SimpleCutWindow(QMainWindow):
         menu.addAction(search_action)
         material_actions = []
         for choice in choices:
-            code, _, _ = _material_badge_spec(choice)
-            action = menu.addAction(f"{code}  {choice}")
+            # The compact badge already shows PA6G / POM-C / PP in the table.
+            # Repeating that code in front of the full family produced labels
+            # such as "PA6G PA6G PŁYTA" and "PE PEEK".
+            action = menu.addAction(choice)
             action.setCheckable(True)
+            action.setActionGroup(group)
             action.setChecked(choice.casefold() == material.strip().casefold())
-            action.triggered.connect(
-                lambda _checked=False, value=choice: self._set_row_material(table, row, column, value)
-            )
+            if table is getattr(self, "parts", None):
+                action.triggered.connect(
+                    lambda _checked=False, value=choice, m=menu: self._choose_part_thickness(row, value, m)
+                )
+            else:
+                action.triggered.connect(
+                    lambda _checked=False, value=choice, m=menu: (m.hide(), self._set_row_material(table, row, column, value))
+                )
             material_actions.append(action)
         def filter_choices(query: str) -> None:
             needle = query.strip().casefold()
@@ -4184,8 +5400,115 @@ class SimpleCutWindow(QMainWindow):
         )
         table.setCellWidget(row, column, badge)
 
+    def _stock_catalog_formats(self, material: str, thickness: float) -> list[tuple[float, float]]:
+        formats: list[tuple[float, float]] = []
+        for entry in self._stock_catalog_entries(material, thickness):
+            candidate = (float(entry.width), float(entry.height))
+            if candidate not in formats:
+                formats.append(candidate)
+        return formats
+
+    def _stock_catalog_entries(self, material: str, thickness: float) -> list[MaterialCatalogEntry]:
+        needle = material.strip().casefold()
+        entries: list[MaterialCatalogEntry] = []
+        for entry in self._material_catalog:
+            matches = {
+                catalog_family_label(entry).casefold(),
+                str(entry.material or "").strip().casefold(),
+                str(entry.product_name or "").strip().casefold(),
+            }
+            if needle not in matches or abs(float(entry.thickness) - thickness) >= 0.001:
+                continue
+            if entry.width > 0 and entry.height > 0:
+                entries.append(entry)
+        return sorted(entries, key=lambda entry: (entry.width, entry.height, entry.gross_price_m2))
+
+    def _catalog_entry_for_stock(
+        self,
+        material: str,
+        thickness: float,
+        width: float,
+        height: float,
+    ) -> MaterialCatalogEntry | None:
+        for entry in self._stock_catalog_entries(material, thickness):
+            if (abs(entry.width - width) < 0.001 and abs(entry.height - height) < 0.001) or (
+                abs(entry.width - height) < 0.001 and abs(entry.height - width) < 0.001
+            ):
+                return entry
+        return None
+
+    def _set_stock_format_selector(self, row: int) -> None:
+        if row < 0 or row >= self.stock_table.rowCount():
+            return
+        material = self._stock_cell_text(row, STOCK_MATERIAL_COLUMN).strip()
+        try:
+            thickness = float(self._stock_cell_text(row, STOCK_THICKNESS_COLUMN).replace(",", "."))
+        except ValueError:
+            thickness = 0.0
+        try:
+            current = (
+                float(self._stock_cell_text(row, STOCK_HEIGHT_COLUMN).replace(",", ".")),
+                float(self._stock_cell_text(row, STOCK_WIDTH_COLUMN).replace(",", ".")),
+            )
+        except ValueError:
+            current = (0.0, 0.0)
+        selector = QComboBox(self.stock_table)
+        selector.setObjectName("stockFormatPicker")
+        selector.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        selector.setMinimumContentsLength(0)
+        selector.setFixedWidth(self.stock_table.columnWidth(STOCK_FORMAT_COLUMN))
+        selector.setToolTip("Wybierz format dostępny dla materiału i grubości")
+        selector.view().setMinimumWidth(220)
+        selector.addItem("-", None)
+        for entry in self._stock_catalog_entries(material, thickness):
+            width, height = float(entry.width), float(entry.height)
+            selector.addItem(f"{width:g} × {height:g} mm", (width, height))
+            selector.setItemData(
+                selector.count() - 1,
+                f"Cena katalogowa: {entry.gross_price_m2:.2f} zł/m²",
+                Qt.ItemDataRole.ToolTipRole,
+            )
+        matching = next(
+            (
+                index for index in range(selector.count())
+                if selector.itemData(index) == current
+            ),
+            -1,
+        )
+        selector.setCurrentIndex(matching if matching >= 0 else 0)
+
+        def apply_format(index: int) -> None:
+            selected = selector.itemData(index)
+            if not isinstance(selected, tuple) or len(selected) != 2:
+                return
+            self.stock_table.blockSignals(True)
+            try:
+                self._set_stock_cell_text(row, STOCK_HEIGHT_COLUMN, selected[0])
+                self._set_stock_cell_text(row, STOCK_WIDTH_COLUMN, selected[1])
+            finally:
+                self.stock_table.blockSignals(False)
+
+        selector.currentIndexChanged.connect(apply_format)
+        self.stock_table.setCellWidget(row, STOCK_FORMAT_COLUMN, selector)
+
+    def _set_stock_priority(self, row: int, enabled: bool) -> None:
+        item = self.stock_table.item(row, STOCK_PRIORITY_COLUMN)
+        if item is None:
+            item = self._stock_item("0")
+            item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self.stock_table.setItem(row, STOCK_PRIORITY_COLUMN, item)
+        value = 1 if enabled else 0
+        # The item is storage for the priority value; only the dot is visible.
+        item.setText("")
+        item.setData(Qt.ItemDataRole.UserRole, value)
+        button = self.stock_table.cellWidget(row, STOCK_PRIORITY_COLUMN)
+        if isinstance(button, QPushButton):
+            button.blockSignals(True)
+            button.setChecked(bool(value))
+            button.blockSignals(False)
+
     def _stock_stack_limit(self, row: int) -> int:
-        quantity = safeNumber(self._stock_cell_text(row, 3), 1) or 1
+        quantity = safeNumber(self._stock_cell_text(row, STOCK_QUANTITY_COLUMN), 1) or 1
         return max(1, int(quantity))
 
     def _set_stock_stack_size(self, row: int, stack_size: int) -> None:
@@ -4195,11 +5518,11 @@ class SimpleCutWindow(QMainWindow):
         if stack_size > 999:
             self.statusBar().showMessage("Sztapel może mieć najwyżej 999 płyt.", 4000)
             return
-        item = self.stock_table.item(row, 5)
+        item = self.stock_table.item(row, STOCK_STACK_COLUMN)
         if item is None:
             item = self._stock_item("")
             item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            self.stock_table.setItem(row, 5, item)
+            self.stock_table.setItem(row, STOCK_STACK_COLUMN, item)
         # The item is storage only. Rendering its text as well as the selector
         # creates the misleading duplicate number visible in the table.
         item.setText("")
@@ -4208,7 +5531,7 @@ class SimpleCutWindow(QMainWindow):
 
     def _prompt_stock_stack_size(self, row: int) -> None:
         limit = self._stock_stack_limit(row)
-        current = max(1, int(safeNumber(self._stock_cell_text(row, 5), 1) or 1))
+        current = max(1, int(safeNumber(self._stock_cell_text(row, STOCK_STACK_COLUMN), 1) or 1))
         upper_bound = min(999, max(10, limit, current))
         value, accepted = QInputDialog.getInt(
             self,
@@ -4277,13 +5600,13 @@ class SimpleCutWindow(QMainWindow):
             "font-size: 11px; font-weight: 700; padding: 2px; text-align: center; }"
             "QToolButton:hover { color: #ffffff; background: " + hover_color + "; border-radius: 5px; }"
         )
-        self.stock_table.setCellWidget(row, 5, button)
+        self.stock_table.setCellWidget(row, STOCK_STACK_COLUMN, button)
 
     # ── Stock-table keyboard navigation (Tab/Enter like the parts table) ─────
     def _editable_stock_columns(self) -> list[int]:
         # Thickness is an editable attribute, but dimensions are entered most
         # often in sequence. Keep Tab focused on width, height and quantity.
-        return [col for col in (1, 2, 3) if not self.stock_table.isColumnHidden(col)]
+        return [col for col in (STOCK_HEIGHT_COLUMN, STOCK_WIDTH_COLUMN, STOCK_QUANTITY_COLUMN) if not self.stock_table.isColumnHidden(col)]
 
     def _focus_stock_cell(self, row: int, col: int) -> None:
         if row < 0 or row >= self.stock_table.rowCount():
@@ -4350,10 +5673,11 @@ class SimpleCutWindow(QMainWindow):
         self.stock_table.removeRow(last_row)
         if self.stock_table.rowCount() == 0:
             self._add_stock_row({"width": "", "height": "", "quantity": ""})
+        self._refresh_linked_pair_glows()
         self.statusBar().showMessage(f"Usunięto płytę z wiersza {last_row + 1}", 1800)
 
     def _normalize_stock_item(self, row: int, column: int) -> None:
-        if column == 4:
+        if column in (STOCK_FORMAT_COLUMN, STOCK_MATERIAL_COLUMN, STOCK_PRIORITY_COLUMN, STOCK_STACK_COLUMN):
             return
         item = self.stock_table.item(row, column)
         if item is None:
@@ -4376,11 +5700,54 @@ class SimpleCutWindow(QMainWindow):
 
     def _stock_cell_text(self, row: int, column: int) -> str:
         item = self.stock_table.item(row, column)
-        if item is not None and column == 5:
+        if item is not None and column == STOCK_STACK_COLUMN:
             stored = item.data(Qt.ItemDataRole.UserRole)
             if stored is not None:
                 return str(stored)
         return item.text() if item else ""
+
+    def _stock_preferred_cut_axis(self, row: int) -> str:
+        height_item = self.stock_table.item(row, STOCK_HEIGHT_COLUMN)
+        width_item = self.stock_table.item(row, STOCK_WIDTH_COLUMN)
+        if height_item is not None and bool(height_item.data(STOCK_CUT_AXIS_ROLE)):
+            return "x"
+        if width_item is not None and bool(width_item.data(STOCK_CUT_AXIS_ROLE)):
+            return "y"
+        return "auto"
+
+    def _set_stock_cut_axis(self, row: int, axis: str) -> None:
+        if row < 0 or row >= self.stock_table.rowCount():
+            return
+        normalized = axis if axis in {"x", "y"} else "auto"
+        for column, column_axis in (
+            (STOCK_HEIGHT_COLUMN, "x"),
+            (STOCK_WIDTH_COLUMN, "y"),
+        ):
+            item = self.stock_table.item(row, column)
+            if item is None:
+                item = self._stock_item("")
+                self.stock_table.setItem(row, column, item)
+            active = normalized == column_axis
+            item.setData(STOCK_CUT_AXIS_ROLE, active)
+            field = "wysokości" if column == STOCK_HEIGHT_COLUMN else "szerokości"
+            item.setToolTip(
+                f"Kierunek długich cięć: wzdłuż {field} płyty."
+                if active
+                else f"Kliknij szarą kropkę, aby ciąć wzdłuż {field} płyty."
+            )
+        self.stock_table.viewport().update()
+
+    def _toggle_stock_cut_axis(self, row: int, column: int) -> None:
+        requested = "x" if column == STOCK_HEIGHT_COLUMN else "y"
+        current = self._stock_preferred_cut_axis(row)
+        self._set_stock_cut_axis(row, "auto" if current == requested else requested)
+        if self._stock_preferred_cut_axis(row) == "auto":
+            self.statusBar().showMessage("Kierunek cięcia: automatyczny", 2500)
+        else:
+            value = self._stock_cell_text(row, column).strip()
+            self.statusBar().showMessage(
+                f"Kierunek cięcia: wzdłuż boku {value or 'wybranego'} mm", 3500
+            )
 
     def _set_stock_cell_text(self, row: int, column: int, value: object) -> None:
         text = _format_table_number(value)
@@ -4402,21 +5769,39 @@ class SimpleCutWindow(QMainWindow):
 
     def _on_stock_item_changed(self, item: QTableWidgetItem) -> None:
         self._mark_stock_cell(item.row(), item.column(), False)
-        if item.column() == 0:
+        if item.column() == STOCK_THICKNESS_COLUMN:
             self._on_stock_thickness_changed(item.text())
-        elif item.column() == 4:
+        elif item.column() == STOCK_MATERIAL_COLUMN:
             item.setData(Qt.ItemDataRole.UserRole, False)
+        if item.column() in (STOCK_THICKNESS_COLUMN, STOCK_HEIGHT_COLUMN, STOCK_WIDTH_COLUMN, STOCK_MATERIAL_COLUMN):
+            self._set_stock_format_selector(item.row())
+            self._refresh_linked_pair_glows()
 
     def _mark_stock_cell(self, row: int, column: int, invalid: bool) -> None:
         item = self.stock_table.item(row, column)
         if item is None:
             return
-        if invalid:
-            item.setBackground(QBrush(QColor(127, 29, 29, 96)))
-            item.setToolTip("Popraw wartość w tej komórce.")
-        else:
-            item.setBackground(QBrush())
-            item.setToolTip("")
+        signals_were_blocked = self.stock_table.signalsBlocked()
+        self.stock_table.blockSignals(True)
+        try:
+            item.setData(CELL_ERROR_ROLE, invalid)
+            if invalid:
+                self._apply_link_background(item)
+                item.setToolTip("Popraw wartość w tej komórce.")
+            else:
+                self._apply_link_background(item)
+                if column in (STOCK_HEIGHT_COLUMN, STOCK_WIDTH_COLUMN):
+                    active = bool(item.data(STOCK_CUT_AXIS_ROLE))
+                    field = "wysokości" if column == STOCK_HEIGHT_COLUMN else "szerokości"
+                    item.setToolTip(
+                        f"Kierunek długich cięć: wzdłuż {field} płyty."
+                        if active
+                        else f"Kliknij szarą kropkę, aby ciąć wzdłuż {field} płyty."
+                    )
+                else:
+                    item.setToolTip("")
+        finally:
+            self.stock_table.blockSignals(signals_were_blocked)
 
     def _add_stock_row(self, values: dict[str, object] | SheetStock | None = None) -> None:
         if isinstance(values, SheetStock):
@@ -4427,49 +5812,95 @@ class SimpleCutWindow(QMainWindow):
                 "height": values.nominal_height or values.height,
                 "quantity": values.quantity,
                 "stack_size": values.stack_size,
+                "priority": values.priority,
+                "preferred_cut_axis": values.preferred_cut_axis,
+                "allow_rotation": values.allow_rotation,
             }
-        data = dict(values or {"thickness": self._last_thickness, "width": 2000, "height": 1000, "quantity": 1})
-        thickness = safeNumber(data.get("thickness"), self._last_thickness) or self._last_thickness
-        material = str(data.get("material") or self._selected_material_name(thickness)).strip()
+        context_material, context_thickness = self._active_part_context()
+        data = dict(values or {"thickness": context_thickness, "width": 1000, "height": 2000, "quantity": 1})
+        thickness = safeNumber(data.get("thickness"), context_thickness) or context_thickness
+        material = str(data.get("material") or context_material or self._selected_material_name(thickness)).strip()
         row = self.stock_table.rowCount()
         self.stock_table.insertRow(row)
-        for column, key in enumerate(("thickness", "width", "height", "quantity")):
+        for column, key in (
+            (STOCK_THICKNESS_COLUMN, "thickness"),
+            (STOCK_HEIGHT_COLUMN, "width"),
+            (STOCK_WIDTH_COLUMN, "height"),
+            (STOCK_QUANTITY_COLUMN, "quantity"),
+        ):
             value = thickness if key == "thickness" and key not in data else data.get(key, "")
-            self.stock_table.setItem(row, column, self._stock_item(value))
+            item = self._stock_item(value)
+            item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.stock_table.setItem(row, column, item)
         material_item = self._stock_item(material)
         material_item.setFlags(material_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
         material_item.setData(Qt.ItemDataRole.UserRole, True)
-        self.stock_table.setItem(row, 4, material_item)
-        self._set_material_badge(self.stock_table, row, 4, material)
+        material_item.setData(STOCK_TEMPLATE_ROLE, bool(data.get("template", False)))
+        material_item.setData(
+            STOCK_ALLOW_ROTATION_ROLE,
+            bool(data.get("allow_rotation", getattr(self, "_algo_settings", {}).get("allow_rotation_stock", True))),
+        )
+        self.stock_table.setItem(row, STOCK_MATERIAL_COLUMN, material_item)
+        self._set_material_badge(self.stock_table, row, STOCK_MATERIAL_COLUMN, material, editable=False)
         stack_size = max(1, int(safeNumber(data.get("stack_size"), 1) or 1))
         stack_item = self._stock_item("")
         stack_item.setFlags(stack_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
         stack_item.setData(Qt.ItemDataRole.UserRole, stack_size)
-        self.stock_table.setItem(row, 5, stack_item)
+
+        # Priority is a small state marker: grey by default and green when the
+        # board is selected for priority cutting.
+        priority_val = max(0, int(safeNumber(data.get("priority", 0)) or 0))
+        prio_btn = QPushButton("●")
+        prio_btn.setCheckable(True)
+        prio_btn.setChecked(priority_val > 0)
+        prio_btn.setToolTip("Oznacz jako priorytetową płytę")
+        def _update_prio_style(checked):
+            color = "#32b77a" if checked else "#73839a"
+            hover = "rgba(50, 183, 122, 0.16)" if checked else "rgba(115, 131, 154, 0.16)"
+            prio_btn.setStyleSheet(
+                "QPushButton {"
+                f" background: transparent; color: {color}; font-size: 18px;"
+                " border: 0; padding: 0;"
+                "}"
+                f" QPushButton:hover {{ background: {hover}; border-radius: 5px; }}"
+            )
+        _update_prio_style(prio_btn.isChecked())
+        prio_btn.toggled.connect(_update_prio_style)
+        prio_btn.toggled.connect(lambda checked, stock_row=row: self._set_stock_priority(stock_row, checked))
+        priority_item = self._stock_item("")
+        priority_item.setFlags(priority_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        priority_item.setData(Qt.ItemDataRole.UserRole, priority_val)
+        self.stock_table.setItem(row, STOCK_PRIORITY_COLUMN, priority_item)
+        self.stock_table.setCellWidget(row, STOCK_PRIORITY_COLUMN, prio_btn)
+
+        self.stock_table.setItem(row, STOCK_STACK_COLUMN, stack_item)
         self._set_stack_control(row, stack_size)
+        self._set_stock_cut_axis(row, str(data.get("preferred_cut_axis", "auto") or "auto"))
+        self._set_stock_format_selector(row)
 
     def _stock_row_is_blank(self, row: int) -> bool:
         values = [
             self._stock_cell_text(row, col).strip()
-            for col in range(4)
+            for col in (STOCK_THICKNESS_COLUMN, STOCK_HEIGHT_COLUMN, STOCK_WIDTH_COLUMN, STOCK_QUANTITY_COLUMN)
         ]
         return not any(values)
 
     def _stock_row_is_incomplete(self, row: int) -> bool:
         """A draft board may receive the material and thickness from the selector."""
-        return any(not self._stock_cell_text(row, column).strip() for column in (1, 2, 3))
+        return any(not self._stock_cell_text(row, column).strip() for column in (STOCK_HEIGHT_COLUMN, STOCK_WIDTH_COLUMN, STOCK_QUANTITY_COLUMN))
 
     def _add_or_replace_blank_stock_row(self, width: float, height: float) -> None:
         if self.stock_table.rowCount() == 0:
             self._add_stock_row({"thickness": "", "width": "", "height": "", "quantity": ""})
         selected_rows = sorted({index.row() for index in self.stock_table.selectedIndexes()})
         row = selected_rows[0] if selected_rows else 0
-        quantity = self._stock_cell_text(row, 3).strip() or "1"
-        thickness = self._stock_cell_text(row, 0).strip() or str(self._last_thickness)
-        self._set_stock_cell_text(row, 0, thickness)
-        self._set_stock_cell_text(row, 1, f"{width:.0f}")
-        self._set_stock_cell_text(row, 2, f"{height:.0f}")
-        self._set_stock_cell_text(row, 3, quantity)
+        quantity = self._stock_cell_text(row, STOCK_QUANTITY_COLUMN).strip() or "1"
+        thickness = self._stock_cell_text(row, STOCK_THICKNESS_COLUMN).strip() or str(self._last_thickness)
+        self._set_stock_cell_text(row, STOCK_THICKNESS_COLUMN, thickness)
+        self._set_stock_cell_text(row, STOCK_HEIGHT_COLUMN, f"{width:.0f}")
+        self._set_stock_cell_text(row, STOCK_WIDTH_COLUMN, f"{height:.0f}")
+        self._set_stock_cell_text(row, STOCK_QUANTITY_COLUMN, quantity)
+        self._set_stock_format_selector(row)
         columns = self._editable_stock_columns()
         if columns:
             self.stock_table.clearSelection()
@@ -4480,6 +5911,7 @@ class SimpleCutWindow(QMainWindow):
             self.stock_table.removeRow(row)
         if self.stock_table.rowCount() == 0:
             self._add_stock_row({"width": "", "height": "", "quantity": ""})
+        self._refresh_linked_pair_glows()
 
     def _collect_stock(self) -> list[SheetStock]:
         stocks: list[SheetStock] = []
@@ -4489,12 +5921,12 @@ class SimpleCutWindow(QMainWindow):
                 self._mark_stock_cell(row, column, False)
             if self._stock_row_is_blank(row):
                 continue
-            thickness_text = self._stock_cell_text(row, 0)
-            width_text = self._stock_cell_text(row, 1)
-            height_text = self._stock_cell_text(row, 2)
-            qty_text = self._stock_cell_text(row, 3)
-            material_text = self._stock_cell_text(row, 4).strip()
-            stack_text = self._stock_cell_text(row, 5).strip() or "1"
+            thickness_text = self._stock_cell_text(row, STOCK_THICKNESS_COLUMN)
+            width_text = self._stock_cell_text(row, STOCK_HEIGHT_COLUMN)
+            height_text = self._stock_cell_text(row, STOCK_WIDTH_COLUMN)
+            qty_text = self._stock_cell_text(row, STOCK_QUANTITY_COLUMN)
+            material_text = self._stock_cell_text(row, STOCK_MATERIAL_COLUMN).strip()
+            stack_text = self._stock_cell_text(row, STOCK_STACK_COLUMN).strip() or "1"
             if not material_text:
                 material_text = "standard"
 
@@ -4512,8 +5944,13 @@ class SimpleCutWindow(QMainWindow):
                     "quantity": qty_text,
                     "stack_size": stack_text,
                     "price": 0,
+                    "priority": 1 if (self.stock_table.cellWidget(row, STOCK_PRIORITY_COLUMN) and self.stock_table.cellWidget(row, STOCK_PRIORITY_COLUMN).isChecked()) else 0,
+                    "preferred_cut_axis": self._stock_preferred_cut_axis(row),
                     "allow_rotation": bool(
-                        getattr(self, "_algo_settings", {}).get("allow_rotation_stock", True)
+                        self.stock_table.item(row, STOCK_MATERIAL_COLUMN).data(STOCK_ALLOW_ROTATION_ROLE)
+                        if self.stock_table.item(row, STOCK_MATERIAL_COLUMN)
+                        and self.stock_table.item(row, STOCK_MATERIAL_COLUMN).data(STOCK_ALLOW_ROTATION_ROLE) is not None
+                        else getattr(self, "_algo_settings", {}).get("allow_rotation_stock", True)
                     ),
                     "min_offcut_width": 0,
                     "min_offcut_height": 0,
@@ -4527,15 +5964,25 @@ class SimpleCutWindow(QMainWindow):
                     self._mark_stock_cell(row, column, True)
                 continue
             if stock:
-                catalog_entry = next(
-                    (
-                        entry
-                        for entry in self._material_catalog
-                        if catalog_family_label(entry).casefold() == material_text.casefold()
-                        and abs(entry.thickness - thickness_val) < 0.001
-                    ),
-                    None,
+                catalog_entry = self._catalog_entry_for_stock(
+                    material_text,
+                    thickness_val,
+                    float(stock.width),
+                    float(stock.height),
                 )
+                # Older flat catalogues have a price per material/thickness
+                # but no sheet dimensions.  Keep that legacy fallback; matrix
+                # catalogues such as Boral always use the exact format above.
+                if catalog_entry is None:
+                    catalog_entry = next(
+                        (
+                            entry for entry in self._catalog_entries_for(material_text)
+                            if abs(entry.thickness - thickness_val) < 0.001
+                            and entry.width <= 0
+                            and entry.height <= 0
+                        ),
+                        None,
+                    )
                 if catalog_entry is not None:
                     stock.price = (
                         catalog_entry.gross_price_m2
@@ -4576,6 +6023,124 @@ class SimpleCutWindow(QMainWindow):
             raise ValueError("Dodaj przynajmniej jeden dostępny format płyty.")
         return stocks
 
+    def _smart_catalog_stock(
+        self,
+        parts: list[SheetPart],
+        manual_stock: list[SheetStock],
+    ) -> list[SheetStock]:
+        """Build smart candidates from priced formats and visible manual stock.
+
+        A manual row is an explicit declaration that a board is available.  It
+        must not disappear merely because the catalogue contains other formats
+        for the same material and thickness.  Catalogue rows still replace an
+        equal manual size so that the exact supplier price is retained.
+        """
+        candidates: list[SheetStock] = []
+        missing: list[str] = []
+        specifications = sorted(
+            {
+                (str(part.material or "standard").strip() or "standard", round(float(part.thickness), 4))
+                for part in parts
+            },
+            key=lambda item: (item[0].casefold(), item[1]),
+        )
+        for material, thickness in specifications:
+            templates = [
+                stock for stock in manual_stock
+                if materials_are_compatible(stock.material, material)
+                and abs(float(stock.thickness) - thickness) < 0.001
+            ]
+            default_template = templates[0] if templates else None
+            entries = [
+                entry for entry in self._catalog_entries_for(material)
+                if abs(float(entry.thickness) - thickness) < 0.001
+                and float(entry.width) > 0
+                and float(entry.height) > 0
+                and float(entry.gross_price_m2) > 0
+            ]
+            if entries:
+                for entry in entries:
+                    exact_template = next(
+                        (
+                            stock for stock in templates
+                            if {
+                                round(float(stock.width), 3), round(float(stock.height), 3)
+                            } == {
+                                round(float(entry.width), 3), round(float(entry.height), 3)
+                            }
+                        ),
+                        default_template,
+                    )
+                    allow_rotation = (
+                        bool(exact_template.allow_rotation)
+                        if exact_template is not None
+                        else bool(self._algo_settings.get("allow_rotation_stock", True))
+                    )
+                    preferred_axis = (
+                        str(exact_template.preferred_cut_axis or "auto")
+                        if exact_template is not None
+                        else "auto"
+                    )
+                    area_m2 = float(entry.width) * float(entry.height) / 1_000_000.0
+                    candidates.append(
+                        SheetStock(
+                            material=material,
+                            thickness=thickness,
+                            width=float(entry.width),
+                            height=float(entry.height),
+                            quantity=1,
+                            price=float(entry.gross_price_m2) * area_m2,
+                            allow_rotation=allow_rotation,
+                            min_offcut_width=0.0,
+                            min_offcut_height=0.0,
+                            source="smart-candidate",
+                            nominal_width=float(entry.width),
+                            nominal_height=float(entry.height),
+                            stack_size=1,
+                            priority=0,
+                            preferred_cut_axis=preferred_axis,
+                        )
+                    )
+                catalog_sizes = {
+                    tuple(sorted((round(float(entry.width), 3), round(float(entry.height), 3))))
+                    for entry in entries
+                }
+                candidates.extend(
+                    replace(stock, quantity=1, stack_size=1, source="smart-candidate", priority=0)
+                    for stock in templates
+                    if tuple(
+                        sorted((round(float(stock.width), 3), round(float(stock.height), 3)))
+                    ) not in catalog_sizes
+                )
+            elif templates:
+                # A manually defined material without a dimensional price list
+                # still works; every visible format becomes a smart candidate.
+                candidates.extend(
+                    replace(stock, quantity=1, stack_size=1, source="smart-candidate", priority=0)
+                    for stock in templates
+                )
+            else:
+                missing.append(f"{material}, gr. {thickness:g} mm")
+
+        if missing:
+            raise ValueError(
+                "Tryb inteligentny nie znalazł dostępnych formatów dla: " + ", ".join(missing) + "."
+            )
+
+        unique: dict[tuple[object, ...], SheetStock] = {}
+        for stock in candidates:
+            key = (
+                stock.material.casefold(),
+                round(stock.thickness, 4),
+                tuple(sorted((round(stock.width, 3), round(stock.height, 3)))),
+                round(stock.price, 4),
+            )
+            unique.setdefault(key, stock)
+        return sorted(
+            unique.values(),
+            key=lambda stock: (stock.material.casefold(), stock.thickness, stock.width * stock.height, stock.price),
+        )
+
     def _load_stock_rows(self, stocks: list[SheetStock]) -> None:
         if stocks and hasattr(self, "material_selector"):
             first = stocks[0]
@@ -4590,8 +6155,9 @@ class SimpleCutWindow(QMainWindow):
             if material_index >= 0:
                 self.material_selector.setCurrentIndex(material_index)
                 for index in range(self.catalog_thickness_selector.count()):
-                    entry = self.catalog_thickness_selector.itemData(index)
-                    if isinstance(entry, MaterialCatalogEntry) and abs(entry.thickness - first.thickness) < 0.001:
+                    selected = self.catalog_thickness_selector.itemData(index)
+                    thickness = selected.thickness if isinstance(selected, MaterialCatalogEntry) else safeNumber(selected)
+                    if thickness is not None and abs(float(thickness) - first.thickness) < 0.001:
                         self.catalog_thickness_selector.setCurrentIndex(index)
                         break
             else:
@@ -4602,6 +6168,7 @@ class SimpleCutWindow(QMainWindow):
             self._add_stock_row(stock)
         if self.stock_table.rowCount() == 0:
             self._add_stock_row({"width": "", "height": "", "quantity": ""})
+        self._refresh_linked_pair_glows()
 
     def _available_stock_quantity(self) -> int:
         try:
@@ -4609,9 +6176,15 @@ class SimpleCutWindow(QMainWindow):
         except Exception:
             return 0
 
+    def _unlock_experimental_tools(self) -> bool:
+        """Extension point for restricted tools; regular desktop builds are unlocked."""
+        return True
+
     @safe_ui_action("Nie udało się wczytać formatek z DXF.")
     def import_dxf_parts(self) -> None:
         """Import the complete DXF drawing as one rectangular blank."""
+        if not self._unlock_experimental_tools():
+            return
         last_dir = str(repositories.get_setting("last_dxf_import_dir", "") or "")
         path_str, _ = QFileDialog.getOpenFileName(
             self,
@@ -4675,6 +6248,21 @@ class SimpleCutWindow(QMainWindow):
         technical_editor.setIcon(_gear_icon())
         technical_editor.setToolTip("Otwórz eksperymentalny edytor rysunku technicznego")
         technical_editor.clicked.connect(self.open_technical_editor)
+        self.cad_inspection_button = QToolButton()
+        self.cad_inspection_button.setObjectName("smallButton")
+        self.cad_inspection_button.setText("CAD")
+        self.cad_inspection_button.setToolTip("Otwórz, obracaj i mierz modele DXF, STEP lub STL")
+        self.cad_inspection_button.clicked.connect(self.open_cad_inspection)
+        excel_button = QToolButton()
+        excel_button.setObjectName("smallButton")
+        excel_button.setText("Excel")
+        excel_button.setToolTip("Masowy import formatek i płyt z Excela")
+        excel_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        excel_menu = QMenu(excel_button)
+        excel_menu.addAction("Wczytaj zlecenie z XLSX…", self._import_batch_workbook_dialog)
+        excel_menu.addAction("Otwórz szablon w Excelu", self._open_batch_template)
+        excel_menu.addAction("Zapisz kopię szablonu…", self._save_batch_template_copy)
+        excel_button.setMenu(excel_menu)
 
         for _btn in (add, remove, undo_last):
             _btn.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
@@ -4692,6 +6280,8 @@ class SimpleCutWindow(QMainWindow):
         buttons.addWidget(remove)
         buttons.addWidget(undo_last)
         buttons.addWidget(technical_editor)
+        buttons.addWidget(self.cad_inspection_button)
+        buttons.addWidget(excel_button)
         buttons.addStretch(1)
 
         layout = QVBoxLayout(section)
@@ -4713,16 +6303,22 @@ class SimpleCutWindow(QMainWindow):
         thickness = float(getattr(self, "_last_thickness", 0.0) or 0.0)
         material = self._selected_material_name(thickness)
         self.add_part_row([thickness, width, height, 1, material])
-        self._focus_part_cell(self.parts.rowCount() - 1, 4)
+        self._focus_part_cell(self.parts.rowCount() - 1, PART_WIDTH_COLUMN)
+
+    @safe_ui_action("Nie udało się otworzyć podglądu CAD.")
+    def open_cad_inspection(self) -> None:
+        from app.cad_viewer import CadInspectionDialog
+
+        CadInspectionDialog(self).exec()
 
     def _remove_last_part_row(self) -> None:
         """Remove the last non-blank row from the parts table, with undo support."""
         # Find the last row that has any content.
         last_row = -1
         for row in range(self.parts.rowCount() - 1, -1, -1):
-            w = self.parts.item(row, 2)
-            h = self.parts.item(row, 3)
-            q = self.parts.item(row, 4)
+            w = self.parts.item(row, PART_WIDTH_COLUMN)
+            h = self.parts.item(row, PART_HEIGHT_COLUMN)
+            q = self.parts.item(row, PART_QUANTITY_COLUMN)
             if any(
                 item is not None and item.text().strip()
                 for item in (w, h, q)
@@ -4735,17 +6331,175 @@ class SimpleCutWindow(QMainWindow):
         self._record_parts_state()   # push current state before mutation
         self.parts.removeRow(last_row)
         self._renumber_parts_rows()
+        self._refresh_linked_pair_glows()
         self._record_parts_state()   # record new state
         self.statusBar().showMessage(f"Usunięto wiersz {last_row + 1}", 1800)
 
     def _renumber_parts_rows(self) -> None:
-        """Refresh the leading row-index column (column 0) after a deletion."""
+        """Compatibility hook kept for callers after removing row numbering."""
+
+    def _batch_template_path(self) -> Path:
+        return _resource_path("sample_data/SIEKACZ9000_szablon_zlecenia.xlsx")
+
+    @safe_ui_action("Nie udało się otworzyć szablonu Excel.")
+    def _open_batch_template(self) -> None:
+        template = self._batch_template_path()
+        if not template.is_file():
+            raise FileNotFoundError(f"Brak dołączonego szablonu: {template}")
+        from import_export.batch_workbook import write_catalog_synced_template
+
+        synced = Path(tempfile.gettempdir()) / "SIEKACZ9000_szablon_zlecenia.xlsx"
+        write_catalog_synced_template(template, synced, self._material_catalog)
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(synced.resolve()))):
+            raise OSError("System nie znalazł programu do otwierania plików XLSX.")
+        self.statusBar().showMessage("Otwarto szablon zsynchronizowany z aktualnym katalogiem.", 5000)
+
+    @safe_ui_action("Nie udało się zapisać szablonu Excel.")
+    def _save_batch_template_copy(self) -> None:
+        template = self._batch_template_path()
+        if not template.is_file():
+            raise FileNotFoundError(f"Brak dołączonego szablonu: {template}")
+        path_str, _ = QFileDialog.getSaveFileName(
+            self,
+            "Zapisz szablon zlecenia",
+            "SIEKACZ9000_szablon_zlecenia.xlsx",
+            "Arkusz Excel (*.xlsx)",
+        )
+        if not path_str:
+            return
+        destination = Path(path_str)
+        if destination.suffix.lower() != ".xlsx":
+            destination = destination.with_suffix(".xlsx")
+        from import_export.batch_workbook import write_catalog_synced_template
+
+        write_catalog_synced_template(template, destination, self._material_catalog)
+        self.statusBar().showMessage(f"Zapisano szablon: {destination.name}", 5000)
+
+    @safe_ui_action("Nie udało się wczytać zlecenia z Excela.")
+    def _import_batch_workbook_dialog(self) -> None:
+        path_str, _ = QFileDialog.getOpenFileName(
+            self,
+            "Wczytaj formatki i płyty",
+            "",
+            "Arkusz Excel (*.xlsx)",
+        )
+        if not path_str:
+            return
+        self._load_batch_workbook(Path(path_str), ask_before_replace=True)
+
+    def _load_batch_workbook(self, path: Path, *, ask_before_replace: bool = False) -> None:
+        from import_export.batch_workbook import read_batch_workbook
+
+        data = read_batch_workbook(path)
+        if ask_before_replace and (
+            any(
+                (self.parts.item(row, PART_HEIGHT_COLUMN) and self.parts.item(row, PART_HEIGHT_COLUMN).text().strip())
+                or (self.parts.item(row, PART_WIDTH_COLUMN) and self.parts.item(row, PART_WIDTH_COLUMN).text().strip())
+                for row in range(self.parts.rowCount())
+            )
+            or any(not self._stock_row_is_blank(row) for row in range(self.stock_table.rowCount()))
+        ):
+            answer = QMessageBox.question(
+                self,
+                "Wczytaj zlecenie z Excela",
+                "Zastąpić obecne formatki i płyty danymi z wybranego skoroszytu?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        self._apply_batch_data(data.parts, data.stocks, replace=True)
+        self.statusBar().showMessage(
+            f"Wczytano {len(data.parts)} wierszy formatek i {len(data.stocks)} wierszy płyt z {path.name}.",
+            7000,
+        )
+
+    def _append_batch_parts(self, rows: list[dict[str, object]]) -> None:
+        for record in rows:
+            row = self.parts.rowCount()
+            self.add_part_row(
+                [
+                    record["thickness"],
+                    record["width"],
+                    record["height"],
+                    record["quantity"],
+                    record.get("material", ""),
+                ]
+            )
+            item = self.parts.item(row, PART_MATERIAL_COLUMN)
+            if item is not None:
+                item.setData(PART_ALLOW_ROTATION_ROLE, bool(record.get("allow_rotation", True)))
+                item.setData(PART_PRIORITY_ROLE, int(record.get("priority", 0) or 0))
+                item.setData(PART_LABEL_ROLE, str(record.get("label", "") or ""))
+                item.setData(PART_NOTES_ROLE, str(record.get("notes", "") or ""))
+
+    def _append_batch_stocks(self, rows: list[dict[str, object]]) -> None:
+        for record in rows:
+            self._add_stock_row(record)
+
+    def _apply_batch_data(
+        self,
+        parts: list[dict[str, object]],
+        stocks: list[dict[str, object]],
+        *,
+        replace: bool,
+    ) -> None:
+        was_suspended = self._parts_undo_suspended
         self._parts_undo_suspended = True
         try:
-            for row in range(self.parts.rowCount()):
-                self.parts.setItem(row, 0, self._row_index_item(row))
+            if replace:
+                self.parts.setRowCount(0)
+                self.stock_table.setRowCount(0)
+            self._append_batch_stocks(stocks)
+            self._append_batch_parts(parts)
+            if self.parts.rowCount() == 0:
+                self.add_part_row()
+            if self.stock_table.rowCount() == 0:
+                self._add_stock_row({"width": "", "height": "", "quantity": ""})
+            self._sync_stock_with_parts()
+            self._refresh_linked_pair_glows()
         finally:
-            self._parts_undo_suspended = False
+            self._parts_undo_suspended = was_suspended
+        self._reset_parts_undo_history()
+
+    def _paste_part_rows(self, text: str) -> None:
+        from import_export.batch_workbook import parse_clipboard_rows
+
+        try:
+            rows = parse_clipboard_rows(text, "parts")
+        except ValueError as exc:
+            QMessageBox.warning(self, "Wklej formatki z Excela", str(exc))
+            return
+        if not rows:
+            return
+        # Remove untouched draft rows before appending real Excel data.
+        for row in range(self.parts.rowCount() - 1, -1, -1):
+            height = self.parts.item(row, PART_HEIGHT_COLUMN)
+            width = self.parts.item(row, PART_WIDTH_COLUMN)
+            if not ((height and height.text().strip()) or (width and width.text().strip())):
+                self.parts.removeRow(row)
+        self._append_batch_parts(rows)
+        self._sync_stock_with_parts()
+        self._record_parts_state()
+        self.statusBar().showMessage(f"Wklejono {len(rows)} wierszy formatek z Excela.", 5000)
+
+    def _paste_stock_rows(self, text: str) -> None:
+        from import_export.batch_workbook import parse_clipboard_rows
+
+        try:
+            rows = parse_clipboard_rows(text, "stocks")
+        except ValueError as exc:
+            QMessageBox.warning(self, "Wklej płyty z Excela", str(exc))
+            return
+        if not rows:
+            return
+        if self.stock_table.rowCount() == 1:
+            material_item = self.stock_table.item(0, STOCK_MATERIAL_COLUMN)
+            if self._stock_row_is_blank(0) or bool(material_item and material_item.data(STOCK_TEMPLATE_ROLE)):
+                self.stock_table.setRowCount(0)
+        self._append_batch_stocks(rows)
+        self._refresh_linked_pair_glows()
+        self.statusBar().showMessage(f"Wklejono {len(rows)} wierszy płyt z Excela.", 5000)
 
     @safe_ui_action("Nie udało się zapisać szablonu.")
     def _export_parts_template(self) -> None:
@@ -5023,7 +6777,7 @@ class SimpleCutWindow(QMainWindow):
         layout.setContentsMargins(12, 10, 12, 10)
         layout.setSpacing(6)
         try:
-            project = sanitizeProjectState(dict(record.get("project") or {}), max_total_parts=MAX_TOTAL_PARTS)
+            project = sanitizeProjectState(dict(record.get("project") or {}), max_total_parts=None)
         except Exception:
             project = Project()
 
@@ -5066,43 +6820,67 @@ class SimpleCutWindow(QMainWindow):
         return item
 
     def _refresh_row_numbers(self) -> None:
-        for row in range(self.parts.rowCount()):
-            self.parts.setItem(row, 0, self._row_index_item(row))
+        """Compatibility hook kept for callers after removing row numbering."""
 
     def add_part_row(self, values: list[object] | None = None) -> None:
+        context_material, context_thickness = self._active_part_context()
         if not values or isinstance(values, bool):
-            values = [self._last_thickness, "", "", 1]
+            values = [
+                context_thickness,
+                "",
+                "",
+                1,
+                context_material or self._selected_material_name(context_thickness),
+            ]
         elif len(values) == 3:
+            # Legacy short form is (szerokość, wysokość, ilość).
             values = [self._last_thickness] + list(values)
         if len(values) == 6:
             values = values[1:]
         values = list(values)
         if len(values) < 5:
-            values.append(self._selected_material_name(float(values[0] or self._last_thickness)))
+            values.append(
+                context_material
+                or self._selected_material_name(float(values[0] or context_thickness or self._last_thickness))
+            )
+        try:
+            row_thickness = float(str(values[0] or context_thickness or self._last_thickness).replace(",", "."))
+        except (TypeError, ValueError):
+            row_thickness = float(context_thickness or self._last_thickness)
+        if not str(values[4] or "").strip():
+            inherited = context_material if self._material_supports_thickness(context_material, row_thickness) else ""
+            values[4] = inherited or self._infer_part_material(self.parts.rowCount(), row_thickness)
         was_suspended = self._parts_undo_suspended
         self._parts_undo_suspended = True
         try:
             row = self.parts.rowCount()
             self.parts.insertRow(row)
-            self.parts.setItem(row, 0, self._row_index_item(row))
-            for col, value in enumerate(values[:5], start=1):
+            display_values = [values[4], values[0], values[2], values[1], values[3]]
+            for col, value in zip(
+                (PART_MATERIAL_COLUMN, PART_THICKNESS_COLUMN, PART_HEIGHT_COLUMN, PART_WIDTH_COLUMN, PART_QUANTITY_COLUMN),
+                display_values,
+            ):
                 item = QTableWidgetItem(_format_table_number(value))
-                if col == 5:
+                if col == PART_MATERIAL_COLUMN:
                     item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                else:
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 self.parts.setItem(row, col, item)
-            self._set_material_badge(self.parts, row, 5, str(values[4] or ""))
+            self._set_material_badge(self.parts, row, PART_MATERIAL_COLUMN, str(values[4] or ""))
         finally:
             self._parts_undo_suspended = was_suspended
+        if hasattr(self, "stock_table"):
+            self._sync_stock_with_parts()
         if not was_suspended:
             self._record_parts_state()
 
     def _editable_part_columns(self) -> list[int]:
-        return [col for col in (1, 2, 3, 4) if not self.parts.isColumnHidden(col)]
+        return [col for col in (PART_THICKNESS_COLUMN, PART_HEIGHT_COLUMN, PART_WIDTH_COLUMN, PART_QUANTITY_COLUMN) if not self.parts.isColumnHidden(col)]
 
     def _focus_part_cell(self, row: int, col: int) -> None:
         if row < 0 or row >= self.parts.rowCount():
             return
-        if col not in (1, 2, 3, 4):
+        if col not in (PART_THICKNESS_COLUMN, PART_HEIGHT_COLUMN, PART_WIDTH_COLUMN, PART_QUANTITY_COLUMN):
             col = self._editable_part_columns()[0]
         item = self.parts.item(row, col)
         if item is None:
@@ -5116,11 +6894,11 @@ class SimpleCutWindow(QMainWindow):
 
     def _focus_part_width_cell(self, row: int) -> None:
         columns = self._editable_part_columns()
-        self._focus_part_cell(row, 2 if 2 in columns else (columns[0] if columns else 2))
+        self._focus_part_cell(row, PART_WIDTH_COLUMN if PART_WIDTH_COLUMN in columns else (columns[0] if columns else PART_WIDTH_COLUMN))
 
     def _edit_part_cell_on_click(self, row: int, col: int) -> None:
         """A real click starts editing any part parameter, including thickness."""
-        if col not in (1, 2, 3, 4):
+        if col not in (PART_THICKNESS_COLUMN, PART_HEIGHT_COLUMN, PART_WIDTH_COLUMN, PART_QUANTITY_COLUMN):
             return
         QTimer.singleShot(0, lambda row=row, col=col: self._focus_part_cell(row, col))
 
@@ -5148,11 +6926,14 @@ class SimpleCutWindow(QMainWindow):
             self.add_part_row()
         # A new line starts with its dimensions. Thickness is inherited from
         # the active material context and remains editable on demand.
-        self._focus_part_cell(row + 1, 2 if 2 in columns else columns[0])
+        self._focus_part_cell(
+            row + 1,
+            PART_THICKNESS_COLUMN if PART_THICKNESS_COLUMN in columns else columns[0],
+        )
 
     def _add_or_focus_next_part_row(self, row: int) -> None:
         columns = self._editable_part_columns()
-        self._handle_part_nav_key(row, columns[-1] if columns else 4, False)
+        self._handle_part_nav_key(row, columns[-1] if columns else PART_QUANTITY_COLUMN, False)
 
     def remove_selected_rows(self) -> None:
         rows = sorted({index.row() for index in self.parts.selectedIndexes()}, reverse=True)
@@ -5212,13 +6993,13 @@ class SimpleCutWindow(QMainWindow):
         )
 
     def _snapshot_parts(self) -> tuple:
-        rows: list[tuple[str, str, str, str, str]] = []
+        rows: list[tuple] = []
         for row in range(self.parts.rowCount()):
-            t_item = self.parts.item(row, 1)
-            w_item = self.parts.item(row, 2)
-            h_item = self.parts.item(row, 3)
-            q_item = self.parts.item(row, 4)
-            m_item = self.parts.item(row, 5)
+            t_item = self.parts.item(row, PART_THICKNESS_COLUMN)
+            w_item = self.parts.item(row, PART_WIDTH_COLUMN)
+            h_item = self.parts.item(row, PART_HEIGHT_COLUMN)
+            q_item = self.parts.item(row, PART_QUANTITY_COLUMN)
+            m_item = self.parts.item(row, PART_MATERIAL_COLUMN)
             rows.append(
                 (
                     t_item.text() if t_item else "",
@@ -5226,6 +7007,12 @@ class SimpleCutWindow(QMainWindow):
                     h_item.text() if h_item else "",
                     q_item.text() if q_item else "",
                     m_item.text() if m_item else "",
+                    bool(m_item.data(PART_ALLOW_ROTATION_ROLE))
+                    if m_item and m_item.data(PART_ALLOW_ROTATION_ROLE) is not None
+                    else bool(getattr(self, "_algo_settings", {}).get("allow_rotation_parts", True)),
+                    int(m_item.data(PART_PRIORITY_ROLE) or 0) if m_item else 0,
+                    str(m_item.data(PART_LABEL_ROLE) or "") if m_item else "",
+                    str(m_item.data(PART_NOTES_ROLE) or "") if m_item else "",
                 )
             )
         return tuple(rows)
@@ -5235,26 +7022,35 @@ class SimpleCutWindow(QMainWindow):
         try:
             self.parts.setRowCount(0)
             for row_data in snapshot:
+                allow_rotation = bool(getattr(self, "_algo_settings", {}).get("allow_rotation_parts", True))
+                priority, label, notes = 0, "", ""
                 if len(row_data) == 3:
                     t, w, h, q, material = str(self._last_thickness), row_data[0], row_data[1], row_data[2], self._selected_material_name(self._last_thickness)
                 elif len(row_data) == 4:
                     t, w, h, q, material = row_data[0], row_data[1], row_data[2], row_data[3], self._selected_material_name(float(row_data[0] or self._last_thickness))
+                elif len(row_data) >= 9:
+                    t, w, h, q, material, allow_rotation, priority, label, notes = row_data[:9]
                 else:
                     t, w, h, q, material = row_data
                 row = self.parts.rowCount()
                 self.parts.insertRow(row)
-                self.parts.setItem(row, 0, self._row_index_item(row))
-                self.parts.setItem(row, 1, QTableWidgetItem(_format_table_number(t)))
-                self.parts.setItem(row, 2, QTableWidgetItem(_format_table_number(w)))
-                self.parts.setItem(row, 3, QTableWidgetItem(_format_table_number(h)))
-                self.parts.setItem(row, 4, QTableWidgetItem(_format_table_number(q)))
+                self.parts.setItem(row, PART_THICKNESS_COLUMN, QTableWidgetItem(_format_table_number(t)))
+                self.parts.setItem(row, PART_WIDTH_COLUMN, QTableWidgetItem(_format_table_number(w)))
+                self.parts.setItem(row, PART_HEIGHT_COLUMN, QTableWidgetItem(_format_table_number(h)))
+                self.parts.setItem(row, PART_QUANTITY_COLUMN, QTableWidgetItem(_format_table_number(q)))
                 material_item = QTableWidgetItem(str(material))
                 material_item.setFlags(material_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                self.parts.setItem(row, 5, material_item)
-                self._set_material_badge(self.parts, row, 5, str(material or ""))
+                material_item.setData(PART_ALLOW_ROTATION_ROLE, bool(allow_rotation))
+                material_item.setData(PART_PRIORITY_ROLE, int(priority or 0))
+                material_item.setData(PART_LABEL_ROLE, str(label or ""))
+                material_item.setData(PART_NOTES_ROLE, str(notes or ""))
+                self.parts.setItem(row, PART_MATERIAL_COLUMN, material_item)
+                self._set_material_badge(self.parts, row, PART_MATERIAL_COLUMN, str(material or ""))
         finally:
             self._parts_undo_suspended = False
         self._parts_current_snapshot = snapshot
+        self._sync_stock_with_parts()
+        self._refresh_linked_pair_glows()
 
     def _record_parts_state(self) -> None:
         if self._parts_undo_suspended:
@@ -5269,16 +7065,127 @@ class SimpleCutWindow(QMainWindow):
             self._parts_redo_stack.clear()
         self._parts_current_snapshot = snap
 
+    def _sync_stock_with_parts(self) -> None:
+        if getattr(self, "_syncing_stock", False):
+            return
+        self._syncing_stock = True
+        try:
+            # Dict preserves the visible part-row order.  The previous set made
+            # assignment of the first template board non-deterministic.
+            required: dict[tuple[str, float], str] = {}
+            for r in range(self.parts.rowCount()):
+                height_item = self.parts.item(r, PART_HEIGHT_COLUMN)
+                width_item = self.parts.item(r, PART_WIDTH_COLUMN)
+                height_text = height_item.text().strip() if height_item else ""
+                width_text = width_item.text().strip() if width_item else ""
+                if not height_text and not width_text:
+                    # Draft rows carry default quantity/thickness/material for
+                    # faster entry, but they are not material demand yet.
+                    continue
+                mat_item = self.parts.item(r, PART_MATERIAL_COLUMN)
+                thk_item = self.parts.item(r, PART_THICKNESS_COLUMN)
+                mat_text = mat_item.text().strip() if mat_item else ""
+                thk_text = thk_item.text().strip() if thk_item else ""
+                if not mat_text and not self._material_catalog:
+                    mat_text = "standard"
+                if mat_text and mat_text != "-" and thk_text:
+                    try:
+                        thk = round(float(thk_text.replace(",", ".")), 4)
+                        if thk > 0:
+                            required.setdefault((mat_text.casefold(), thk), mat_text)
+                    except ValueError:
+                        pass
+
+            existing = []
+            existing_set = set()
+            for r in range(self.stock_table.rowCount()):
+                mat = self._stock_cell_text(r, STOCK_MATERIAL_COLUMN).strip()
+                thk_text = self._stock_cell_text(r, STOCK_THICKNESS_COLUMN).strip()
+                if mat and thk_text:
+                    try:
+                        thk = round(float(thk_text.replace(",", ".")), 4)
+                        existing.append({"row": r, "mat": mat.casefold(), "thk": thk})
+                        existing_set.add((mat.casefold(), thk))
+                    except ValueError:
+                        pass
+
+            missing = []
+            for (req_mat, req_thk), display in required.items():
+                if (req_mat, req_thk) not in existing_set:
+                    missing.append((req_mat, req_thk, display))
+
+            # The initial board is a template, not a committed material.
+            # Prefer replacing it before adding another row for the first part
+            # material/thickness pair. Older explicitly typed boards are never
+            # repurposed just because a later part has a different thickness.
+            repurposable_rows = []
+            for row in range(self.stock_table.rowCount()):
+                material = self._stock_cell_text(row, STOCK_MATERIAL_COLUMN).strip().casefold()
+                material_item = self.stock_table.item(row, STOCK_MATERIAL_COLUMN)
+                is_initial_template = bool(material_item and material_item.data(STOCK_TEMPLATE_ROLE))
+                if not material or material == "standard" or is_initial_template:
+                    repurposable_rows.append(row)
+            # Never recycle a material-specific board when a part changes.
+            # Keeping that stock and adding the newly required specification is
+            # safer than silently changing a different board in the table.
+
+            for (req_mat, req_thk, display) in missing:
+                catalog_format = self._default_catalog_format(display, req_thk)
+                catalog_preset = (
+                    (catalog_format.width, catalog_format.height)
+                    if catalog_format is not None and catalog_format.width > 0 and catalog_format.height > 0
+                    else None
+                )
+                if repurposable_rows:
+                    row_to_edit = repurposable_rows.pop(0)
+                    self._set_stock_cell_text(row_to_edit, STOCK_THICKNESS_COLUMN, f"{req_thk:g}")
+                    self._set_stock_cell_text(row_to_edit, STOCK_MATERIAL_COLUMN, display)
+                    material_item = self.stock_table.item(row_to_edit, STOCK_MATERIAL_COLUMN)
+                    if material_item is not None:
+                        material_item.setData(STOCK_TEMPLATE_ROLE, False)
+                    if catalog_preset is not None:
+                        self._set_stock_cell_text(row_to_edit, STOCK_HEIGHT_COLUMN, catalog_preset[0])
+                        self._set_stock_cell_text(row_to_edit, STOCK_WIDTH_COLUMN, catalog_preset[1])
+                    self._set_stock_cut_axis(row_to_edit, "auto")
+                    self._set_material_badge(self.stock_table, row_to_edit, STOCK_MATERIAL_COLUMN, display, editable=False)
+                    self._set_stock_format_selector(row_to_edit)
+                else:
+                    preset = catalog_preset or self._default_sheet_preset_for_material(display)
+                    if preset is None:
+                        preset = (2000.0, 1000.0)
+                    self._add_stock_row({
+                        "thickness": req_thk,
+                        "material": display,
+                        "width": preset[0],
+                        "height": preset[1],
+                        "quantity": 1
+                    })
+
+            self._last_known_required = set(required)
+            self._refresh_linked_pair_glows()
+        finally:
+            self._syncing_stock = False
+
     def _on_parts_item_changed(self, item: QTableWidgetItem) -> None:
         if self._parts_undo_suspended:
             return
-        if item.column() == 0:
-            return
-        if item.column() == 1:
+        if item.column() == PART_THICKNESS_COLUMN:
             try:
                 val = float(item.text().replace(",", "."))
                 if val > 0:
                     self._last_thickness = val
+                    material = self._ensure_part_material(item.row(), val)
+                    if material or not self._material_catalog:
+                        self._sync_stock_with_parts()
+                    else:
+                        self.statusBar().showMessage(
+                            f"Wybierz materiał dla formatki w wierszu {item.row() + 1}.",
+                            5000,
+                        )
+                    QTimer.singleShot(
+                        0,
+                        lambda row=item.row(): self._focus_part_cell(row, PART_HEIGHT_COLUMN),
+                    )
             except ValueError:
                 pass
         self._record_parts_state()
@@ -5312,21 +7219,43 @@ class SimpleCutWindow(QMainWindow):
         parts: list[SheetPart] = []
         total_quantity = 0
         for row in range(self.parts.rowCount()):
-            thickness_text = self.parts.item(row, 1).text().strip() if self.parts.item(row, 1) else ""
-            width_text = self.parts.item(row, 2).text().strip() if self.parts.item(row, 2) else ""
-            height_text = self.parts.item(row, 3).text().strip() if self.parts.item(row, 3) else ""
-            qty_text = self.parts.item(row, 4).text().strip() if self.parts.item(row, 4) else ""
-            material_text = self.parts.item(row, 5).text().strip() if self.parts.item(row, 5) else ""
-            if not material_text:
-                material_text = "standard"
-            # Skip rows where the user left all data cells blank
-            if not width_text and not height_text and not qty_text:
+            thickness_text = self.parts.item(row, PART_THICKNESS_COLUMN).text().strip() if self.parts.item(row, PART_THICKNESS_COLUMN) else ""
+            height_text = self.parts.item(row, PART_HEIGHT_COLUMN).text().strip() if self.parts.item(row, PART_HEIGHT_COLUMN) else ""
+            width_text = self.parts.item(row, PART_WIDTH_COLUMN).text().strip() if self.parts.item(row, PART_WIDTH_COLUMN) else ""
+            qty_text = self.parts.item(row, PART_QUANTITY_COLUMN).text().strip() if self.parts.item(row, PART_QUANTITY_COLUMN) else ""
+            material_text = self.parts.item(row, PART_MATERIAL_COLUMN).text().strip() if self.parts.item(row, PART_MATERIAL_COLUMN) else ""
+            # Quantity defaults to 1, so it cannot decide whether a row is a
+            # draft.  A row without either dimension is genuinely empty.
+            if not width_text and not height_text:
                 continue
 
             try:
                 thickness_val = float(thickness_text.replace(",", ".")) if thickness_text else 1.0
             except ValueError:
                 thickness_val = 1.0
+
+            if not material_text or material_text == "-":
+                material_text = self._ensure_part_material(row, thickness_val)
+            if not material_text:
+                if self._material_catalog:
+                    raise ValueError(
+                        f"Wybierz materiał dla formatki w wierszu {row + 1}. "
+                        "Program nie połączy formatki z przypadkową płytą."
+                    )
+                material_text = "standard"
+
+            material_item = self.parts.item(row, PART_MATERIAL_COLUMN)
+            imported_rotation = (
+                material_item.data(PART_ALLOW_ROTATION_ROLE) if material_item is not None else None
+            )
+            allow_rotation = (
+                bool(imported_rotation)
+                if imported_rotation is not None
+                else bool(getattr(self, "_algo_settings", {}).get("allow_rotation_parts", True))
+            )
+            priority = int(material_item.data(PART_PRIORITY_ROLE) or 0) if material_item else 0
+            label = str(material_item.data(PART_LABEL_ROLE) or "") if material_item else ""
+            notes = str(material_item.data(PART_NOTES_ROLE) or "") if material_item else ""
 
             part, row_errors = validatePart(
                 {
@@ -5336,10 +7265,10 @@ class SimpleCutWindow(QMainWindow):
                     "quantity": qty_text,
                     "material": material_text,
                     "thickness": thickness_val,
-                    "allow_rotation": bool(
-                        getattr(self, "_algo_settings", {}).get("allow_rotation_parts", True)
-                    ),
-                    "label": "",
+                    "allow_rotation": allow_rotation,
+                    "priority": priority,
+                    "label": label,
+                    "notes": notes,
                 },
                 row + 1,
             )
@@ -5347,17 +7276,50 @@ class SimpleCutWindow(QMainWindow):
                 raise ValueError("\n".join(row_errors)) from None
             assert part is not None
             total_quantity += part.quantity
-            if total_quantity > MAX_TOTAL_PARTS:
+            if (
+                total_quantity > MAX_TOTAL_PARTS
+                and not self._part_limit_override_authorized
+                and not self._authorize_part_limit_override(total_quantity)
+            ):
                 raise ValueError(
-                    f"Za dużo formatek naraz ({total_quantity}). Podziel zlecenie albo zmniejsz ilość do {MAX_TOTAL_PARTS} szt."
+                    f"Za dużo formatek naraz ({_format_piece_count(total_quantity)}). "
+                    f"Standardowy limit to {_format_piece_count(MAX_TOTAL_PARTS)} szt. "
+                    "Aby go przekroczyć, podaj PIN administratora."
                 )
             parts.append(part)
         if not parts:
             raise ValueError("Dodaj przynajmniej jedną formatkę.")
         return parts
 
+    def _authorize_part_limit_override(self, total_quantity: int) -> bool:
+        """Ask once per application window before bypassing the safe limit."""
+        if self._part_limit_override_authorized:
+            return True
+        pin, accepted = QInputDialog.getText(
+            self,
+            "Duże zlecenie",
+            (
+                f"Zlecenie ma {_format_piece_count(total_quantity)} formatek, a standardowy limit wynosi "
+                f"{_format_piece_count(MAX_TOTAL_PARTS)}.\nPodaj PIN, aby uruchomić pełną optymalizację."
+            ),
+            QLineEdit.EchoMode.Password,
+        )
+        if accepted and pin.strip() == PART_LIMIT_OVERRIDE_PIN:
+            self._part_limit_override_authorized = True
+            self.statusBar().showMessage(
+                "Odblokowano duże zlecenia dla tej sesji.", 5000
+            )
+            return True
+        return False
+
     def _project_for_calculation(self, parts: list[SheetPart]) -> Project:
         stock = self._collect_stock()
+        smart_stock_mode = bool(
+            hasattr(self, "smart_stock_checkbox") and self.smart_stock_checkbox.isChecked()
+        )
+        if smart_stock_mode:
+            stock = self._smart_catalog_stock(parts, stock)
+        self._last_smart_stock_mode = smart_stock_mode
         project = Project()
         project.sheet_stock = stock
         project.sheet_parts = parts
@@ -5379,12 +7341,74 @@ class SimpleCutWindow(QMainWindow):
             allow_rotation=bool(_s.get("allow_rotation_parts", True)),
             saw_feed_m_per_min=float(_s.get("saw_feed_m_per_min", 12.0)),
             animation_mode=str(_s.get("animation_mode", "economy")),
+            smart_stock_mode=smart_stock_mode,
         )
-        errors = getValidationErrors(project, max_total_parts=MAX_TOTAL_PARTS)
+        max_parts = None if self._part_limit_override_authorized else MAX_TOTAL_PARTS
+        errors = getValidationErrors(project, max_total_parts=max_parts)
         if errors:
             raise ValueError("\n".join(errors[:8]))
         self._remember_sheet_formats(stock)
         return project
+
+    @staticmethod
+    def _oversized_part_issues(project: Project) -> list[str]:
+        """Return actionable preflight messages before starting the optimizer."""
+        issues: list[str] = []
+        allow_global_rotation = bool(project.settings.allow_rotation)
+        for part in project.sheet_parts:
+            compatible = [
+                stock
+                for stock in project.sheet_stock
+                if materials_are_compatible(stock.material, part.material)
+                and abs(float(stock.thickness) - float(part.thickness)) < 1e-4
+            ]
+            if not compatible:
+                continue
+
+            fits = False
+            for stock in compatible:
+                direct = part.width <= stock.width + 1e-6 and part.height <= stock.height + 1e-6
+                rotated = (
+                    allow_global_rotation
+                    and part.allow_rotation
+                    and stock.allow_rotation
+                    and part.grain_direction == "none"
+                    and stock.grain_direction == "none"
+                    and part.height <= stock.width + 1e-6
+                    and part.width <= stock.height + 1e-6
+                )
+                if direct or rotated:
+                    fits = True
+                    break
+            if fits:
+                continue
+
+            available = sorted(
+                {(float(stock.width), float(stock.height)) for stock in compatible},
+                key=lambda size: size[0] * size[1],
+                reverse=True,
+            )
+            format_text = ", ".join(f"{width:g} × {height:g} mm" for width, height in available[:3])
+            material = "" if part.material in {"", "standard"} else f" · {part.material}"
+            issues.append(
+                f"Formatka {part.width:g} × {part.height:g} mm{material}, gr. {part.thickness:g} mm "
+                f"nie mieści się na dostępnych płytach ({format_text})."
+            )
+        return issues
+
+    def _show_oversized_parts_message(self, issues: list[str]) -> None:
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("Formatka jest większa niż dostępna płyta")
+        box.setText("<b>Nie można rozpocząć obliczeń.</b>")
+        box.setInformativeText(
+            "\n\n".join(issues[:3])
+            + "\n\nDodaj większy format płyty, zmniejsz formatkę albo włącz dozwolony obrót."
+        )
+        if len(issues) > 3:
+            box.setDetailedText("\n".join(issues))
+        box.setStandardButtons(QMessageBox.StandardButton.Ok)
+        box.exec()
 
     def _project_from_current_inputs(self) -> Project:
         project = self._project_for_calculation(self._collect_parts())
@@ -5469,6 +7493,9 @@ class SimpleCutWindow(QMainWindow):
 
     def _load_project_inputs(self, project: Project) -> None:
         self._load_stock_rows(project.sheet_stock)
+        if hasattr(self, "smart_stock_checkbox"):
+            self.smart_stock_checkbox.setChecked(bool(getattr(project.settings, "smart_stock_mode", False)))
+        self._last_smart_stock_mode = bool(getattr(project.settings, "smart_stock_mode", False))
         stock = project.sheet_stock[0] if project.sheet_stock else None
         if stock:
             self.sheet_width.setValue(stock.nominal_width or stock.width)
@@ -5490,11 +7517,18 @@ class SimpleCutWindow(QMainWindow):
         try:
             for part in project.sheet_parts:
                 self.add_part_row([part.thickness, part.width, part.height, part.quantity, part.material])
+                material_item = self.parts.item(self.parts.rowCount() - 1, PART_MATERIAL_COLUMN)
+                if material_item is not None:
+                    material_item.setData(PART_ALLOW_ROTATION_ROLE, bool(part.allow_rotation))
+                    material_item.setData(PART_PRIORITY_ROLE, int(part.priority))
+                    material_item.setData(PART_LABEL_ROLE, str(part.label or ""))
+                    material_item.setData(PART_NOTES_ROLE, str(part.notes or ""))
             if self.parts.rowCount() == 0:
                 self.add_part_row(["", "", 1])
         finally:
             self._parts_undo_suspended = False
         self._reset_parts_undo_history()
+        self._refresh_linked_pair_glows()
 
     @safe_ui_action("Nie udało się otworzyć projektu z historii.")
     def open_history_project(self, project_id: str) -> None:
@@ -5504,7 +7538,7 @@ class SimpleCutWindow(QMainWindow):
             self._refresh_history_view()
             return
         try:
-            project = sanitizeProjectState(dict(record.get("project") or {}), max_total_parts=MAX_TOTAL_PARTS)
+            project = sanitizeProjectState(dict(record.get("project") or {}), max_total_parts=None)
             result = project_history.result_from_dict(dict(record.get("result") or {}))
         except Exception as exc:
             QMessageBox.warning(self, "Historia projektów", f"Nie udało się otworzyć projektu: {exc}")
@@ -5669,6 +7703,11 @@ class SimpleCutWindow(QMainWindow):
         allow_stock = bool(_s.get("allow_rotation_stock", True))
         stock = group.collect_stock(allow_stock)
         parts = group.collect_parts(allow_parts)
+        smart_stock_mode = bool(
+            hasattr(self, "smart_stock_checkbox") and self.smart_stock_checkbox.isChecked()
+        )
+        if smart_stock_mode:
+            stock = self._smart_catalog_stock(parts, stock)
         material = group.material_name()
         if not stock:
             raise ValueError(f"Grupa „{material}”: dodaj przynajmniej jedną płytę.")
@@ -5695,6 +7734,7 @@ class SimpleCutWindow(QMainWindow):
             allow_rotation=allow_parts,
             saw_feed_m_per_min=float(_s.get("saw_feed_m_per_min", 12.0)),
             animation_mode=str(_s.get("animation_mode", "economy")),
+            smart_stock_mode=smart_stock_mode,
         )
         return project
 
@@ -5765,6 +7805,10 @@ class SimpleCutWindow(QMainWindow):
         try:
             parts = self._collect_parts()
             primary = self._project_for_calculation(parts)
+            oversized = self._oversized_part_issues(primary)
+            if oversized:
+                self._show_oversized_parts_message(oversized)
+                return
             projects = self._collect_order_projects(primary)
         except Exception as exc:
             QMessageBox.warning(self, "Nie mogę policzyć", str(exc))
@@ -5940,6 +7984,20 @@ class SimpleCutWindow(QMainWindow):
             _logger.exception("Cut-metric summary failed")
             self._last_cut_summary = None
         available_stock = self._available_stock_quantity()
+        smart_result = self._last_smart_stock_mode or any(
+            str(message).startswith("Inteligentny dobór formatów:")
+            for message in (getattr(result, "messages", []) or [])
+        )
+        smart_mix_summary = ""
+        if smart_result:
+            format_counts = Counter(
+                (round(float(layout.stock.width)), round(float(layout.stock.height)))
+                for layout in (getattr(result, "sheet_layouts", []) or [])
+            )
+            smart_mix_summary = ", ".join(
+                f"{quantity}×{width}×{height}"
+                for (width, height), quantity in sorted(format_counts.items())
+            )
         if hasattr(self, "preview_util_value"):
             total_layouts = len(result.sheet_layouts) + len(getattr(result, "missing_sheet_layouts", []) or [])
             total_parts = sum(len(layout.parts) for layout in result.sheet_layouts + getattr(result, "missing_sheet_layouts", []))
@@ -5949,8 +8007,13 @@ class SimpleCutWindow(QMainWindow):
             self.preview_waste_value.setText(f"{max(0.0, 100.0 - display_utilization):.1f}%")
 
         def _build_status(pct: float) -> str:
+            sheet_status = (
+                f"Płyty: {used} · AUTO {smart_mix_summary}"
+                if smart_result
+                else f"Płyty: {used} na {available_stock}"
+            )
             return (
-                f"Policzone | Płyty: {used} na {available_stock} | "
+                f"Policzone | {sheet_status} | "
                 f"Wykorzystanie: {pct:.1f}% | Cięcia: {cut_count}"
                 f"{saw_suffix}{cut_time_suffix} | Jednostki: mm"
             )
@@ -6055,7 +8118,11 @@ class SimpleCutWindow(QMainWindow):
     @safe_ui_action("Nie udało się otworzyć ustawień algorytmu.")
     def _open_algo_settings(self) -> None:
         dialog = AlgorithmSettingsDialog(self, self._algo_settings)
-        if dialog.exec() == QDialog.DialogCode.Accepted:
+        result = dialog.exec()
+        if dialog.tutorial_requested:
+            QTimer.singleShot(0, self.open_tutorial)
+            return
+        if result == QDialog.DialogCode.Accepted:
             self._algo_settings = dialog.result_settings()
             repositories.set_setting("default_kerf", float(self._algo_settings.get("kerf", 5.0)))
             repositories.set_setting("saw_feed_m_per_min", float(self._algo_settings.get("saw_feed_m_per_min", 12.0)))
@@ -6125,6 +8192,7 @@ class SimpleCutWindow(QMainWindow):
         apply_native_title_bar(self, theme)
         self.layout_view.set_theme(theme)
         self.layout_view.show_result(self.last_result)
+        self._refresh_linked_pair_glows()
         repositories.set_setting("theme", theme)
 
         # Gentle fade-in: the new theme paints at full opacity but we mask it
@@ -6303,11 +8371,34 @@ class SimpleCutWindow(QMainWindow):
                 # If a specific printer is selected, set it as default temporarily
                 if printer_name:
                     # Get current default printer to restore later
-                    current_ps = subprocess.run(["powershell", "-Command", "(Get-WmiObject -Query \\\"Select * from Win32_Printer Where Default=$true\\\").Name"], capture_output=True, text=True)
+                    current_ps = subprocess.run(
+                        [
+                            "powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+                            "(Get-CimInstance -ClassName Win32_Printer -Filter 'Default = True').Name",
+                        ],
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                    )
                     current_printer = current_ps.stdout.strip()
                     
                     if current_printer and current_printer != printer_name:
-                        subprocess.run(["powershell", "-Command", f"(New-Object -ComObject WScript.Network).SetDefaultPrinter('{printer_name}')"], check=True)
+                        # Pass printer names through the environment.  A name
+                        # may legally contain quotes; interpolating it into a
+                        # PowerShell program was both fragile and injectable.
+                        printer_env = os.environ.copy()
+                        printer_env["SIEKACZ_PRINTER_NAME"] = printer_name
+                        set_printer = [
+                            "powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+                            "(New-Object -ComObject WScript.Network).SetDefaultPrinter($env:SIEKACZ_PRINTER_NAME)",
+                        ]
+                        subprocess.run(
+                            set_printer,
+                            check=True,
+                            env=printer_env,
+                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                        )
                         
                         # Print
                         os.startfile(str(target), "print")  # type: ignore[attr-defined]
@@ -6317,7 +8408,14 @@ class SimpleCutWindow(QMainWindow):
                         time.sleep(2.0)
                         
                         # Restore default
-                        subprocess.run(["powershell", "-Command", f"(New-Object -ComObject WScript.Network).SetDefaultPrinter('{current_printer}')"])
+                        restore_env = os.environ.copy()
+                        restore_env["SIEKACZ_PRINTER_NAME"] = current_printer
+                        subprocess.run(
+                            set_printer,
+                            check=False,
+                            env=restore_env,
+                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                        )
                     else:
                         os.startfile(str(target), "print")  # type: ignore[attr-defined]
                 else:
@@ -6496,9 +8594,8 @@ class SimpleCutWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.warning(self, "Aktualizacja", f"Nie udało się pobrać aktualizacji:\n{exc}")
             return
-        import os
         try:
-            os.startfile(str(path))  # type: ignore[attr-defined]
+            updater.launch_downloaded_update(path)
         except (OSError, AttributeError) as exc:
             QMessageBox.warning(
                 self, "Aktualizacja",

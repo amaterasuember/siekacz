@@ -18,9 +18,10 @@ from datetime import date
 # Data zablokowania aplikacji (rok, miesiąc, dzień)
 LOCK_DATE = date(2027, 8, 12)
 
-# SHA-256 kodu autoryzacyjnego.  Nigdy nie przechowuj PIN-u wprost.
-# Aby wygenerować hash: python -c "import hashlib; print(hashlib.sha256(b'PIN').hexdigest())"
-_PIN_HASH = hashlib.sha256(b"1984").hexdigest()
+# SHA-256 wspolnego kodu dla blokady czasowej i publikatora.
+# Nigdy nie przechowuj PIN-u wprost. Aby zmienic kod:
+# python -c "import hashlib; print(hashlib.sha256(b'PIN').hexdigest())"
+_PIN_HASH = "ea3a03b4971eeb62730e1de238225cc4e6145f0eb50ad28b1379f2a2ee71e16e"
 
 
 def is_locked() -> bool:
@@ -28,8 +29,13 @@ def is_locked() -> bool:
     return date.today() >= LOCK_DATE
 
 
-def _pin_correct(pin: str) -> bool:
+def authorization_pin_is_valid(pin: str) -> bool:
     return hashlib.sha256(pin.strip().encode()).hexdigest() == _PIN_HASH
+
+
+def _pin_correct(pin: str) -> bool:
+    """Backward-compatible private alias used by the expiry dialog."""
+    return authorization_pin_is_valid(pin)
 
 
 def check_and_prompt(parent=None) -> bool:  # type: ignore[assignment]

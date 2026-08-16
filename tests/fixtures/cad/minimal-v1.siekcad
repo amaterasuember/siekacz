@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "application": {
+    "name": "SIEKACZ 9000",
+    "format": "native-cad"
+  },
+  "document": {
+    "id": "11111111-1111-4111-8111-111111111111",
+    "name": "Document",
+    "label": "Fixture CAD v1",
+    "unit": "mm",
+    "active_sketch_id": "22222222-2222-4222-8222-222222222222",
+    "parameters": {
+      "plateWidth": 180.0
+    },
+    "view_state": {
+      "board_width": 500.0,
+      "board_height": 300.0
+    },
+    "objects": [
+      {
+        "id": "22222222-2222-4222-8222-222222222222",
+        "name": "Sketch",
+        "label": "Szkic",
+        "visible": true,
+        "locked": false,
+        "inputs": [],
+        "entities": [
+          {
+            "type": "line",
+            "id": "33333333-3333-4333-8333-333333333333",
+            "start": {"x": 0.0, "y": 0.0},
+            "end": {"x": 180.0, "y": 0.0},
+            "construction": false,
+            "visible": true,
+            "locked": false,
+            "layer": "PROFILE"
+          },
+          {
+            "type": "rectangle",
+            "id": "44444444-4444-4444-8444-444444444444",
+            "origin": {"x": -90.0, "y": -50.0},
+            "width": 180.0,
+            "height": 100.0,
+            "construction": false,
+            "visible": true,
+            "locked": false,
+            "layer": "PROFILE"
+          }
+        ]
+      }
+    ]
+  }
+}

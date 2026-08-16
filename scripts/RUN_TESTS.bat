@@ -17,6 +17,14 @@ echo Uruchamiam test stabilnosci SIEKACZ 9000...
 if errorlevel 1 goto :failed
 
 echo.
+echo Uruchamiam wszystkie testy regresyjne...
+for %%F in ("%ROOT_DIR%\tests\test_*.py") do (
+    echo RUN %%~nxF
+    "%VENV_PY%" "%%~fF"
+    if errorlevel 1 goto :failed
+)
+
+echo.
 echo Testy zakonczone poprawnie.
 if not "%SIEKACZ_NO_PAUSE%"=="1" pause
 exit /b 0

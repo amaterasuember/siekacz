@@ -1,84 +1,388 @@
-SIEKACZ 9000 — License / Licencja
-Copyright (c) 2026 Kewin. All rights reserved.
+SIEKACZ 9000
 
-"Free use (including commercial) — No resale"
-"Darmowe użycie (także komercyjne) — bez odsprzedaży"
+BEZPŁATNA LICENCJA UŻYTKOWANIA, W TYM UŻYTKOWANIA KOMERCYJNEGO  
+WERSJA BETA / UMOWA LICENCYJNA UŻYTKOWNIKA KOŃCOWEGO „EULA”
 
-This is a custom proprietary license. It is intentionally simple and is NOT an
-OSI-approved open-source license.
+Wersja 1.1 – 19 lipca 2026 r.
 
-================================================================
-ENGLISH (authoritative)
-================================================================
+Licencjodawca i autor: Kewin Wójcik    
+Oficjalny kanał dystrybucji: https://github.com/amaterasuember/siekacz
 
-1. GRANT OF USE
-   The author grants you a free, worldwide, non-exclusive, perpetual right to
-   use, run and install the Software ("SIEKACZ 9000"), on any number of
-   computers, for ANY purpose. This expressly includes commercial and in-house
-   use by for-profit companies and organisations of any size, including using
-   the Software as a tool within a profitable business.
+WAŻNE – PRZECZYTAJ PRZED UŻYCIEM PROGRAMU
 
-2. SHARING
-   You may copy and redistribute the Software in its original, unmodified form,
-   free of charge, provided that this LICENSE file and all author/copyright
-   notices are kept fully intact.
+Niniejszy dokument stanowi prawnie wiążącą umowę pomiędzy Kewinem Wójcikiem, zwanym dalej „Autorem”, a osobą fizyczną, osobą prawną albo innym podmiotem korzystającym z programu SIEKACZ 9000, zwanym dalej „Licencjobiorcą”.
 
-3. RESTRICTIONS
-   You may NOT, without the author's prior written permission:
-   a) sell, rent, lease, sublicense, or otherwise charge any fee for the
-      Software;
-   b) distribute or offer the Software as part of a product or service whose
-      primary value is the Software itself, in exchange for payment;
-   c) distribute modified, adapted, or derivative versions of the Software;
-   d) remove, obscure, or alter any author, copyright, or license notice.
+Kliknięcie przycisku akceptacji, zainstalowanie, uruchomienie albo dalsze używanie Programu po udostępnieniu niniejszej Licencji oznacza jej akceptację. Osoba akceptująca Licencję w imieniu podmiotu oświadcza, że jest uprawniona do związania tego podmiotu jej postanowieniami.
 
-   For the avoidance of doubt: USING the Software within your own (even highly
-   profitable) business or workflow is permitted and free of charge. SELLING the
-   Software itself, or making a business out of distributing it for a fee, is
-   not permitted.
+Jeżeli Licencjobiorca nie akceptuje wszystkich warunków Licencji, nie może instalować, uruchamiać ani używać Programu i powinien usunąć posiadane kopie.
 
-4. NO WARRANTY
-   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-   AUTHOR BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY ARISING FROM, OUT
-   OF OR IN CONNECTION WITH THE SOFTWARE OR ITS USE.
+1. DEFINICJE
 
-================================================================
-POLSKI (tłumaczenie pomocnicze)
-================================================================
+1.1. „Program” oznacza program komputerowy SIEKACZ 9000, w tym jego pliki wykonywalne, instalator, interfejs użytkownika, elementy graficzne, dokumentację, wbudowane zasoby, konfigurację, bazy danych, algorytmy wyrażone w kodzie, aktualizacje, poprawki oraz inne elementy udostępnione przez Autora jako część Programu.
 
-1. PRAWO UŻYTKOWANIA
-   Autor udziela Ci darmowego, ogólnoświatowego, niewyłącznego i bezterminowego
-   prawa do używania, uruchamiania i instalowania programu („SIEKACZ 9000”) na
-   dowolnej liczbie komputerów, w DOWOLNYM celu. Obejmuje to wyraźnie użycie
-   komercyjne i wewnętrzne przez firmy i organizacje nastawione na zysk, dowolnej
-   wielkości — w tym używanie programu jako narzędzia w dochodowej działalności.
+1.2. „Niezmodyfikowana kopia” oznacza kopię Programu pobraną z oficjalnego kanału dystrybucji wskazanego przez Autora, której pliki, kod, zasoby, interfejs, zabezpieczenia, informacje o Autorze i mechanizmy licencyjne nie zostały zmienione.
 
-2. UDOSTĘPNIANIE
-   Możesz kopiować i rozpowszechniać program w jego oryginalnej, niezmienionej
-   formie, za darmo, pod warunkiem zachowania tego pliku LICENSE oraz wszystkich
-   informacji o autorze/prawach autorskich w nienaruszonym stanie.
+1.3. „Oficjalny kanał dystrybucji” oznacza stronę internetową, repozytorium, sklep, platformę albo inny kanał jednoznacznie wskazany przez Autora jako źródło autoryzowanych kopii Programu.
 
-3. OGRANICZENIA
-   Bez uprzedniej pisemnej zgody autora NIE WOLNO Ci:
-   a) sprzedawać programu, wynajmować, udzielać odpłatnych podlicencji ani
-      pobierać za niego jakichkolwiek opłat;
-   b) rozpowszechniać ani oferować programu jako części produktu lub usługi,
-      której główną wartością jest sam program, w zamian za zapłatę;
-   c) rozpowszechniać zmodyfikowanych, przerobionych lub pochodnych wersji
-      programu;
-   d) usuwać, ukrywać ani zmieniać informacji o autorze, prawach autorskich lub
-      licencji.
+1.4. „Użytkownik biznesowy” oznacza Licencjobiorcę korzystającego z Programu bezpośrednio w związku z działalnością gospodarczą lub zawodową, dla którego umowa ma charakter zawodowy.
 
-   Dla jasności: UŻYWANIE programu w ramach Twojej własnej (nawet bardzo
-   dochodowej) działalności jest dozwolone i darmowe. SPRZEDAWANIE samego
-   programu lub robienie biznesu z jego odpłatnego rozpowszechniania jest
-   zabronione.
+2. PRAWA DO PROGRAMU
 
-4. BRAK GWARANCJI
-   PROGRAM JEST DOSTARCZANY „TAK JAK JEST”, BEZ JAKIEJKOLWIEK GWARANCJI. AUTOR
-   NIE PONOSI ODPOWIEDZIALNOŚCI ZA JAKIEKOLWIEK SZKODY WYNIKŁE Z UŻYCIA PROGRAMU.
+2.1. Program jest oprogramowaniem zamkniętym i prawnie chronionym. Nie jest oprogramowaniem open source ani oprogramowaniem należącym do domeny publicznej.
 
-W razie wątpliwości lub chęci uzyskania zgody na użycie wykraczające poza tę
-licencję — skontaktuj się z autorem.
+2.2. Autor zachowuje wszelkie autorskie prawa osobiste i majątkowe oraz inne prawa do Programu, jego kodu, dokumentacji, interfejsu, elementów graficznych, nazwy, logo, identyfikacji wizualnej, aktualizacji i niezmodyfikowanych części Programu.
+
+2.3. Niniejsza Licencja nie przenosi na Licencjobiorcę własności Programu, kodu źródłowego ani żadnych praw własności intelektualnej. Licencjobiorca otrzymuje wyłącznie ograniczone prawo do korzystania z Programu na zasadach określonych w Licencji.
+
+2.4. Wszystkie prawa, które nie zostały wyraźnie przyznane Licencjobiorcy, pozostają zastrzeżone na rzecz Autora.
+
+2.5. Licencja nie przyznaje prawa do używania nazwy „SIEKACZ 9000”, nazw produktów Autora, logo ani elementów identyfikacji wizualnej w sposób sugerujący autorstwo, współpracę, rekomendację, partnerstwo albo oficjalne powiązanie z Autorem.
+
+2.6. Jeżeli Program zawiera komponenty osób trzecich, komponenty te mogą podlegać odrębnym licencjom. W zakresie dotyczącym takich komponentów pierwszeństwo mają warunki właściwych licencji osób trzecich.
+
+3. UDZIELENIE LICENCJI
+
+3.1. Autor udziela Licencjobiorcy bezpłatnej, ograniczonej, niewyłącznej, nieprzenoszalnej i niepodlegającej sublicencjonowaniu licencji na instalowanie, uruchamianie i używanie Niezmodyfikowanej kopii Programu.
+
+3.2. Program może być używany:
+
+a) prywatnie;
+
+b) wewnętrznie w przedsiębiorstwie lub organizacji;
+
+c) w działalności gospodarczej lub zawodowej;
+
+d) do wykonywania projektów i usług dla klientów;
+
+e) do przygotowywania rozkrojów oraz wytwarzania produktów przeznaczonych do sprzedaży.
+
+3.3. Licencjobiorca może używać rezultatów uzyskanych przy pomocy Programu w swojej działalności oraz sprzedawać produkty lub usługi wykonane z wykorzystaniem takich rezultatów.
+
+3.4. Komercyjne korzystanie z rezultatów Programu nie oznacza prawa do sprzedaży, licencjonowania, wynajmowania, odpłatnego udostępniania ani dystrybucji samego Programu.
+
+3.5. Licencjobiorca może instalować Program na urządzeniach pozostających pod jego kontrolą.
+
+3.6. Podmiot będący Licencjobiorcą może umożliwiać korzystanie z Programu swoim pracownikom i współpracownikom wyłącznie na potrzeby działalności tego podmiotu. Licencjobiorca odpowiada za przestrzeganie Licencji przez takie osoby.
+
+3.7. Przeniesienie Programu pomiędzy własnymi urządzeniami Licencjobiorcy nie stanowi przeniesienia Licencji na inną osobę.
+
+4. ZAKAZ SPRZEDAŻY I UDOSTĘPNIANIA
+
+Bez uprzedniej, wyraźnej zgody Autora wyrażonej co najmniej w formie dokumentowej Licencjobiorca nie może:
+
+a) sprzedawać, odsprzedawać, wynajmować, wydzierżawiać, użyczać, sublicencjonować ani odpłatnie udostępniać Programu;
+
+b) pobierać jakiejkolwiek bezpośredniej lub pośredniej opłaty za kopię Programu, instalator, nośnik, klucz, dostęp, pobranie albo aktywację;
+
+c) dołączać Programu do odpłatnego produktu, pakietu, abonamentu, szkolenia, usługi lub zestawu, jeżeli Program stanowi istotny element jego wartości;
+
+d) umieszczać Programu na serwerach pobierania, hostingach plików, dyskach publicznych, platformach sprzedażowych, torrentach, repozytoriach, forach ani w innych nieautoryzowanych kanałach;
+
+e) przekazywać kopii Programu innym osobom, z wyjątkiem osób uprawnionych do korzystania z niego w ramach tego samego Licencjobiorcy zgodnie z punktem 3.6;
+
+f) udostępniać Programu osobom trzecim do samodzielnego używania przez przeglądarkę, pulpit zdalny, maszynę wirtualną, API lub w modelu SaaS, PaaS, ASP, service bureau albo podobnym;
+
+g) prezentować Programu jako własnego produktu albo sugerować, że Licencjobiorca jest jego autorem, producentem, oficjalnym dystrybutorem lub przedstawicielem;
+
+h) sprzedawać dostępu do urządzenia lub konta, na którym główną udostępnianą funkcją jest możliwość samodzielnego używania Programu przez osoby trzecie.
+
+Zakazy te nie ograniczają prawa Licencjobiorcy do samodzielnego używania Programu podczas wykonywania odpłatnych usług na rzecz klientów ani do udostępniania linku prowadzącego do oficjalnego kanału dystrybucji Autora.
+
+5. ZAKAZ MODYFIKACJI I INGERENCJI
+
+Bez uprzedniej pisemnej zgody Autora Licencjobiorca nie może:
+
+a) modyfikować, edytować, podmieniać, usuwać ani dodawać plików stanowiących część Programu;
+
+b) zmieniać kodu, zasobów, bibliotek, plików wykonywalnych, pakietów aplikacji, interfejsu, grafik, napisów, ikon, metadanych, manifestów ani mechanizmów aktualizacji;
+
+c) tworzyć zmodyfikowanych wersji, forków, portów, tłumaczeń, adaptacji, opracowań ani utworów zależnych Programu;
+
+d) łączyć Programu z innym oprogramowaniem, wstrzykiwać do niego kodu, ładować nieautoryzowanych wtyczek ani ingerować w jego proces lub pamięć;
+
+e) usuwać, ukrywać, zmieniać lub zastępować informacji o prawach autorskich, Autorze, nazwie Programu, wersji, licencji albo pochodzeniu Programu;
+
+f) dekompilować, dezasemblować, odszyfrowywać, przeprowadzać inżynierii wstecznej ani podejmować prób uzyskania kodu źródłowego;
+
+g) obchodzić lub usuwać zabezpieczeń, kontroli integralności, mechanizmów licencyjnych, aktywacyjnych, aktualizacyjnych albo ograniczeń technicznych;
+
+h) tworzyć, rozpowszechniać lub używać narzędzi służących przede wszystkim do nieautoryzowanej modyfikacji, odblokowania lub obchodzenia zabezpieczeń Programu;
+
+i) wykorzystywać kodu, zasobów ani informacji pozyskanych w wyniku naruszenia Licencji do tworzenia lub rozwijania innego oprogramowania;
+
+j) pomagać, zlecać, zachęcać lub umożliwiać innym osobom wykonywania któregokolwiek z powyższych działań.
+
+Zakaz modyfikacji nie obejmuje zmiany ustawień dostępnych w zwykłym interfejsie Programu ani tworzenia i edytowania plików użytkownika przy użyciu funkcji przewidzianych przez Autora.
+
+6. UPRAWNIENIA WYNIKAJĄCE Z PRAWA
+
+6.1. Ograniczenia określone w Licencji obowiązują w maksymalnym zakresie dopuszczalnym przez bezwzględnie obowiązujące przepisy prawa.
+
+6.2. Licencja nie wyłącza praw, których zgodnie z obowiązującymi przepisami nie można skutecznie wyłączyć umową.
+
+6.3. Licencjobiorca może sporządzić kopię zapasową Programu wyłącznie wtedy, gdy jest ona niezbędna do zgodnego z Licencją korzystania z Programu. Kopia zapasowa:
+
+a) nie może być używana równocześnie z podstawową kopią Programu;
+
+b) nie może być udostępniana innym osobom;
+
+c) musi zachowywać wszystkie oznaczenia i zabezpieczenia;
+
+d) podlega wszystkim postanowieniom niniejszej Licencji.
+
+6.4. Obserwowanie, badanie, testowanie lub dekompilacja Programu są dozwolone wyłącznie w zakresie i na warunkach, których bezwzględnie obowiązujące przepisy prawa nie pozwalają wyłączyć.
+
+6.5. Informacje uzyskane w ramach ustawowego wyjątku dotyczącego interoperacyjności nie mogą być wykorzystywane do tworzenia, rozwijania lub wprowadzania do obrotu programu o istotnie podobnej formie wyrażenia ani do innych działań naruszających prawa Autora.
+
+7. DOZWOLONE I NIEDOZWOLONE ZASTOSOWANIA
+
+7.1. Program może być używany wyłącznie zgodnie z prawem i jego przeznaczeniem.
+
+7.2. Zabronione jest używanie Programu:
+
+a) w celu naruszania praw własności intelektualnej lub innych praw osób trzecich;
+
+b) do atakowania, zakłócania lub obchodzenia zabezpieczeń systemów informatycznych;
+
+c) w połączeniu ze zmodyfikowaną albo pochodzącą z nieautoryzowanego źródła kopią Programu;
+
+d) w sposób mogący fałszywie sugerować odpowiedzialność, rekomendację lub udział Autora;
+
+e) w systemach, w których błąd Programu może bezpośrednio spowodować śmierć, uszkodzenie ciała, katastrofę, poważne zagrożenie dla bezpieczeństwa albo istotną szkodę środowiskową, chyba że Autor wyraził na to odrębną pisemną zgodę.
+
+8. CHARAKTER WERSJI BETA
+
+8.1. Program jest udostępniany jako bezpłatna wersja beta i może:
+
+a) zawierać błędy lub nieukończone funkcje;
+
+b) działać niestabilnie;
+
+c) generować nieprawidłowe, niedokładne lub nieoptymalne wyniki;
+
+d) zmieniać sposób działania, interfejs, funkcje i formaty danych;
+
+e) nie współpracować z określonym sprzętem, systemem, plikiem lub oprogramowaniem;
+
+f) utracić kompatybilność z plikami utworzonymi w innych wersjach.
+
+8.2. Program jest narzędziem pomocniczym. Nie stanowi certyfikowanego systemu projektowego, dokumentacji wykonawczej, systemu bezpieczeństwa ani gwarancji uzyskania najlepszego matematycznie rozkroju.
+
+8.3. Program nie jest przeznaczony do bezpośredniego i bezobsługowego sterowania maszynami, chyba że konkretna funkcja została przez Autora wyraźnie opisana jako przeznaczona do takiego zastosowania.
+
+9. OBOWIĄZKI LICENCJOBIORCY
+
+9.1. Przed zakupem, cięciem, obróbką lub wykorzystaniem materiału Licencjobiorca powinien samodzielnie sprawdzić wynik wygenerowany przez Program.
+
+9.2. Weryfikacja powinna obejmować w szczególności:
+
+a) wymiary i jednostki;
+
+b) format oraz grubość materiału;
+
+c) szerokość rzazu i naddatki technologiczne;
+
+d) liczbę i rozmieszczenie elementów;
+
+e) możliwość obracania elementów;
+
+f) kierunek włókien, powierzchni, struktury lub wzoru materiału;
+
+g) ograniczenia maszyny, narzędzia i procesu produkcyjnego;
+
+h) kolejność cięcia;
+
+i) możliwość bezpiecznego wykonania rozkroju;
+
+j) ilość, koszt i dostępność materiału.
+
+9.3. Licencjobiorca ponosi odpowiedzialność za decyzję o wykorzystaniu wyników Programu oraz za prawidłowe skonfigurowanie procesu produkcyjnego.
+
+9.4. Licencjobiorca powinien wykonywać kopie zapasowe istotnych danych i nie polegać na Programie jako jedynym miejscu ich przechowywania.
+
+10. AKTUALIZACJE, WSPARCIE I DOSTĘPNOŚĆ
+
+10.1. Autor nie ma obowiązku:
+
+a) rozwijania Programu;
+
+b) wydawania aktualizacji lub poprawek;
+
+c) zapewniania wsparcia technicznego;
+
+d) utrzymywania kompatybilności;
+
+e) dalszego udostępniania Programu;
+
+f) utrzymywania określonego kanału pobierania.
+
+10.2. Autor może w dowolnym czasie zakończyć dystrybucję Programu, wycofać określoną wersję lub odmówić dostępu do przyszłych aktualizacji.
+
+10.3. Aktualizacja albo nowa wersja Programu może być udostępniana na podstawie nowych lub zmienionych warunków licencyjnych. Korzystanie z takiej aktualizacji wymaga zaakceptowania warunków przedstawionych przed jej instalacją lub pierwszym uruchomieniem.
+
+10.4. Brak akceptacji nowych warunków nie oznacza automatycznej akceptacji tych warunków przez samo milczenie Licencjobiorcy.
+
+10.5. Autor może odmówić udostępnienia aktualizacji, usług sieciowych lub wsparcia użytkownikowi naruszającemu Licencję albo korzystającemu z nieautoryzowanej lub zmodyfikowanej kopii Programu.
+
+11. DANE I KOMUNIKACJA SIECIOWA
+
+11.1. Program może zapisywać lokalnie informacje techniczne niezbędne do działania, w tym ustawienia, numer wersji Programu oraz informację o zaakceptowanej wersji Licencji.
+
+11.2. Wprowadzenie aktywacji online, telemetrii, kont użytkowników, listy cofniętych wersji albo innych funkcji komunikujących się z serwerem może wymagać przedstawienia odrębnej informacji o przetwarzaniu danych.
+
+11.3. Zakres komunikacji sieciowej i przetwarzania danych osobowych, jeżeli takie funkcje zostaną wprowadzone, zostanie opisany przed ich uruchomieniem zgodnie z obowiązującym prawem.
+
+12. BRAK GWARANCJI
+
+12.1. Program jest dostarczany bezpłatnie, „tak jak jest”, „ze wszystkimi wadami” i w miarę dostępności.
+
+12.2. W maksymalnym zakresie dopuszczalnym przez prawo Autor nie udziela wyraźnych ani dorozumianych gwarancji dotyczących w szczególności:
+
+a) bezbłędności;
+
+b) dostępności i ciągłości działania;
+
+c) bezpieczeństwa i odporności na utratę danych;
+
+d) dokładności, kompletności lub optymalności wyników;
+
+e) przydatności do określonego celu;
+
+f) zgodności z określoną maszyną, materiałem, procesem albo systemem;
+
+g) osiągnięcia określonych oszczędności, rezultatów produkcyjnych lub ekonomicznych;
+
+h) dalszego rozwoju Programu;
+
+i) usunięcia zgłoszonych błędów.
+
+12.3. Żadna informacja, instrukcja, prezentacja, przykład ani odpowiedź udzielona przez Autora nie stanowi gwarancji, chyba że Autor wyraźnie zobowiązał się do niej w odrębnej pisemnej umowie.
+
+12.4. Postanowienia niniejszego punktu nie ograniczają praw, których konsumentowi nie można odebrać na podstawie bezwzględnie obowiązujących przepisów prawa.
+
+13. ODPOWIEDZIALNOŚĆ
+
+13.1. Autor nie odpowiada za szkody powstałe wskutek:
+
+a) wykorzystania wyniku Programu bez jego uprzedniej weryfikacji;
+
+b) błędnego wprowadzenia danych;
+
+c) błędnej konfiguracji szerokości rzazu, jednostek, wymiarów albo materiału;
+
+d) użycia zmodyfikowanej lub nieautoryzowanej kopii Programu;
+
+e) działania sprzętu, systemu operacyjnego, sterowników, bibliotek lub oprogramowania osób trzecich;
+
+f) awarii urządzenia, przerwy w zasilaniu, działania złośliwego oprogramowania lub utraty danych;
+
+g) używania Programu niezgodnie z Licencją, dokumentacją albo przeznaczeniem;
+
+h) zmian dokonanych po stronie Licencjobiorcy;
+
+i) braku wykonania kopii zapasowej;
+
+j) zdarzeń pozostających poza rozsądną kontrolą Autora.
+
+13.2. Wobec Użytkowników biznesowych, w maksymalnym zakresie dopuszczalnym przez prawo, Autor nie odpowiada za:
+
+a) utracone korzyści, przychody, kontrakty, klientów lub możliwości gospodarcze;
+
+b) przestój produkcji lub działalności;
+
+c) utratę albo uszkodzenie danych;
+
+d) koszty zakupu, wymiany lub ponownej obróbki materiału;
+
+e) błędne zamówienia, odpady, braki produkcyjne albo opóźnienia;
+
+f) szkody pośrednie, następcze, przypadkowe lub szczególne;
+
+g) roszczenia klientów albo kontrahentów Licencjobiorcy.
+
+13.3. Łączna odpowiedzialność Autora wobec Użytkownika biznesowego, wynikająca ze wszystkich zdarzeń związanych z Programem, jest ograniczona do kwoty 100 złotych.
+
+13.4. Ograniczenia odpowiedzialności nie mają zastosowania do szkody wyrządzonej przez Autora umyślnie ani w innych przypadkach, w których odpowiedzialności nie można zgodnie z prawem wyłączyć lub ograniczyć.
+
+13.5. Wobec konsumentów oraz osób fizycznych korzystających z ochrony właściwej konsumentom odpowiedzialność Autora podlega ograniczeniu wyłącznie w zakresie dopuszczalnym przez bezwzględnie obowiązujące przepisy prawa.
+
+14. NARUSZENIE LICENCJI I JEJ WYGAŚNIĘCIE
+
+14.1. Licencja wygasa automatycznie w przypadku umyślnego lub istotnego naruszenia jej warunków przez Licencjobiorcę.
+
+14.2. Za istotne naruszenie uważa się w szczególności:
+
+a) sprzedaż albo odpłatne udostępnianie Programu;
+
+b) nieautoryzowaną dystrybucję;
+
+c) modyfikowanie Programu;
+
+d) usuwanie informacji o Autorze lub prawach autorskich;
+
+e) podszywanie się pod Autora;
+
+f) obchodzenie zabezpieczeń;
+
+g) prowadzenie nieuprawnionej inżynierii wstecznej;
+
+h) udostępnianie Programu jako usługi lub platformy osobom trzecim;
+
+i) używanie nielegalnej lub zmodyfikowanej kopii Programu.
+
+14.3. W przypadku naruszenia, które może zostać skutecznie usunięte i nie ma charakteru umyślnego ani istotnego, Autor może wezwać Licencjobiorcę do jego usunięcia w wyznaczonym terminie. Bezskuteczny upływ terminu powoduje wygaśnięcie Licencji.
+
+14.4. Po wygaśnięciu Licencji Licencjobiorca ma obowiązek:
+
+a) natychmiast zaprzestać korzystania z Programu;
+
+b) odinstalować Program;
+
+c) usunąć wszystkie posiadane kopie, w tym kopie zapasowe;
+
+d) zaprzestać udostępniania Programu osobom trzecim.
+
+14.5. Wygaśnięcie Licencji nie pozbawia Autora prawa do dochodzenia roszczeń dotyczących wcześniejszych naruszeń.
+
+14.6. Postanowienia dotyczące praw Autora, zakazów dystrybucji i modyfikacji, odpowiedzialności, roszczeń oraz prawa właściwego pozostają skuteczne również po wygaśnięciu Licencji.
+
+15. ODPOWIEDZIALNOŚĆ UŻYTKOWNIKA BIZNESOWEGO ZA NARUSZENIA
+
+15.1. Użytkownik biznesowy odpowiada za szkody wyrządzone Autorowi wskutek naruszenia Licencji lub korzystania z Programu niezgodnie z prawem.
+
+15.2. W zakresie dopuszczalnym przez prawo Użytkownik biznesowy zobowiązuje się zwolnić Autora z odpowiedzialności wobec osób trzecich oraz pokryć uzasadnione koszty, szkody i wydatki wynikające z roszczeń spowodowanych:
+
+a) niezgodnym z prawem korzystaniem z Programu przez Licencjobiorcę;
+
+b) nieautoryzowaną sprzedażą, modyfikacją lub dystrybucją Programu;
+
+c) naruszeniem praw osób trzecich przez Licencjobiorcę;
+
+d) wykorzystaniem niezweryfikowanych wyników Programu w działalności Licencjobiorcy.
+
+16. POSTANOWIENIA KOŃCOWE
+
+16.1. Licencja stanowi całość porozumienia dotyczącego korzystania z Programu, z wyjątkiem odrębnych pisemnych umów zawartych z Autorem.
+
+16.2. Niewykonywanie przez Autora określonego prawa albo opóźnienie w jego wykonaniu nie oznacza zrzeczenia się tego prawa.
+
+16.3. Licencjobiorca nie może przenieść Licencji, wynikających z niej praw ani obowiązków na inną osobę bez uprzedniej pisemnej zgody Autora.
+
+16.4. Autor może przenieść prawa i obowiązki wynikające z Licencji na następcę prawnego albo podmiot przejmujący prawa do Programu, pod warunkiem że nie ograniczy to bezwzględnie obowiązujących praw konsumenta.
+
+16.5. Jeżeli którekolwiek postanowienie Licencji okaże się nieważne, bezskuteczne lub niewykonalne, pozostałe postanowienia pozostają w mocy. Nieważne postanowienie powinno być interpretowane lub zastąpione w sposób możliwie najbliższy jego zgodnemu z prawem celowi.
+
+16.6. Licencja podlega prawu polskiemu, z uwzględnieniem bezwzględnie obowiązujących przepisów prawa właściwych dla konsumenta.
+
+16.7. Spory z konsumentami będą rozstrzygane przez sądy właściwe na podstawie obowiązujących przepisów prawa.
+
+16.8. W sporach z Użytkownikami biznesowymi właściwy jest sąd powszechny właściwy miejscowo dla miejsca zamieszkania lub siedziby Autora.
+
+16.9. W przypadku sporządzenia tłumaczenia Licencji wersja polska ma pierwszeństwo, chyba że bezwzględnie obowiązujące przepisy stanowią inaczej.
+
+16.10. Pytania, zgłoszenia naruszeń oraz wnioski o udzielenie dodatkowej zgody należy kierować na adres kontaktowy wskazany na początku Licencji.
+
+Copyright © 2026 Kewin Wójcik. Wszelkie prawa zastrzeżone.
+
+SIEKACZ 9000 jest oprogramowaniem zamkniętym.  
+Bezpłatne użytkowanie komercyjne nie oznacza prawa do sprzedaży, modyfikowania ani rozpowszechniania Programu.

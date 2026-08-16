@@ -233,7 +233,16 @@ def _expand_stock(stock: list[SheetStock]) -> list[SheetStock]:
     for item in stock:
         for _ in range(item.quantity):
             expanded.append(replace(item, quantity=1))
-    return sorted(expanded, key=lambda item: (item.material, item.thickness, item.width * item.height, item.price))
+    return sorted(
+        expanded,
+        key=lambda item: (
+            -int(getattr(item, "priority", 0) or 0),
+            item.material,
+            item.thickness,
+            item.width * item.height,
+            item.price,
+        ),
+    )
 
 
 def _canonicalize_stock_orientation(item: SheetStock) -> SheetStock:
@@ -245,6 +254,24 @@ def _canonicalize_stock_orientation(item: SheetStock) -> SheetStock:
     Also synchronizes nominal_width/nominal_height so dataclass equality holds
     between canonicalized stocks from either input order.
     """
+    preferred_axis = str(getattr(item, "preferred_cut_axis", "auto") or "auto").lower()
+
+    # The production candidates in this optimizer are vertical strips.  When
+    # the operator selects a board side, orient that physical side vertically
+    # so the long rip cuts really run along it.  Swap the stored axis together
+    # with the dimensions so it continues to identify the same physical side.
+    if preferred_axis in {"x", "y"} and item.grain_direction == "none":
+        if preferred_axis == "y":
+            return replace(item)
+        return replace(
+            item,
+            width=item.height,
+            height=item.width,
+            nominal_width=item.nominal_height or item.height,
+            nominal_height=item.nominal_width or item.width,
+            preferred_cut_axis="y",
+        )
+
     if not item.allow_rotation or item.grain_direction != "none":
         return replace(item)
     if abs(item.width - item.height) <= EPS:
@@ -267,6 +294,11 @@ def _canonicalize_stock_orientation(item: SheetStock) -> SheetStock:
 
 def _stock_orientation_sets(stock: list[SheetStock]) -> list[tuple[str, list[SheetStock]]]:
     canonical = [_canonicalize_stock_orientation(item) for item in stock]
+    # A selected rip direction is an explicit production instruction, not a
+    # scoring hint.  Do not add the 90-degree alternative that would put the
+    # saw back along the other side.
+    if any(str(getattr(item, "preferred_cut_axis", "auto") or "auto").lower() in {"x", "y"} for item in stock):
+        return [("stock selected cut direction", canonical)]
     rotated: list[SheetStock] = []
     can_rotate_any = False
     for item in canonical:
@@ -279,6 +311,11 @@ def _stock_orientation_sets(stock: list[SheetStock]) -> list[tuple[str, list[She
                     height=item.width,
                     nominal_width=item.nominal_height or item.height,
                     nominal_height=item.nominal_width or item.width,
+                    preferred_cut_axis=(
+                        "y" if getattr(item, "preferred_cut_axis", "auto") == "x"
+                        else "x" if getattr(item, "preferred_cut_axis", "auto") == "y"
+                        else "auto"
+                    ),
                 )
             )
         else:
@@ -321,6 +358,11 @@ _strategic_dimension = _shared_strategic_dimension
 
 
 def _saved_axis(stock: SheetStock) -> str:
+    preferred_cut_axis = str(getattr(stock, "preferred_cut_axis", "auto") or "auto").lower()
+    if preferred_cut_axis == "x":
+        return "y"
+    if preferred_cut_axis == "y":
+        return "x"
     strategic = _strategic_dimension(stock)
     width_is_strategic = abs(stock.width - strategic) <= max(1.0, strategic * 0.01)
     height_is_strategic = abs(stock.height - strategic) <= max(1.0, strategic * 0.01)
@@ -742,6 +784,13 @@ def _compress_layout(layout: SheetLayout, segments: list[_Segment], kerf: float)
     rebuilt_parts: list[PlacedSheetPart] = []
     for segment in segments:
         if _rebuild_segment(layout, segment, kerf):
+            rebuilt_parts.extend(segment.parts)
+        else:
+            # Compression is a visual/compactness improvement only.  A failed
+            # repack must never erase an already valid segment from the result.
+            # Keep its original placements so the quantity invariant remains
+            # intact and any parts that do not fit still stay explicitly
+            # represented by the caller's unplaced list.
             rebuilt_parts.extend(segment.parts)
     if rebuilt_parts:
         layout.parts = sorted(rebuilt_parts, key=lambda placement: (placement.x, placement.y, -placement.width * placement.height))
@@ -2681,6 +2730,156 @@ def _build_horizontal_block_candidates(
     return candidates
 
 
+def _pack_exact_small_guillotine_sheet(
+    stock: SheetStock,
+    parts: list[SheetPart],
+    kerf: float,
+    margin: float,
+    node_budget: int = 80_000,
+) -> tuple[list[PlacedSheetPart], set[int]]:
+    """Find a compact guillotine layout for a small set of concrete parts.
+
+    This is deliberately a bounded exhaustive fallback, not the primary solver.
+    The regular strip heuristics are far faster on normal BOMs, but their search
+    space misses simple horizontal-band layouts.  For a small number of part
+    instances we can safely enumerate both guillotine split orders after every
+    placement and retain the most complete legal layout.
+    """
+    usable_width = stock.width - margin * 2
+    usable_height = stock.height - margin * 2
+    if usable_width <= EPS or usable_height <= EPS or not parts:
+        return [], set()
+
+    best_parts: list[PlacedSheetPart] = []
+    best_ids: set[int] = set()
+    best_area = 0.0
+    nodes = 0
+    seen: set[tuple[tuple[int, ...], tuple[tuple[int, int, int, int], ...]]] = set()
+
+    def update(placed: list[PlacedSheetPart], placed_ids: set[int]) -> None:
+        nonlocal best_parts, best_ids, best_area
+        area = sum(item.width * item.height for item in placed)
+        if len(placed) > len(best_parts) or (len(placed) == len(best_parts) and area > best_area + EPS):
+            best_parts = list(placed)
+            best_ids = set(placed_ids)
+            best_area = area
+
+    def state_key(remaining: list[SheetPart], rects: list[Rect]) -> tuple[tuple[int, ...], tuple[tuple[int, int, int, int], ...]]:
+        return (
+            tuple(sorted(id(part) for part in remaining)),
+            tuple(sorted(tuple(round(value * 1000) for value in rect) for rect in rects)),
+        )
+
+    def descend(remaining: list[SheetPart], rects: list[Rect], placed: list[PlacedSheetPart], placed_ids: set[int]) -> None:
+        nonlocal nodes
+        nodes += 1
+        update(placed, placed_ids)
+        if not remaining or nodes >= node_budget or len(best_parts) == len(parts):
+            return
+        if len(placed) + len(remaining) <= len(best_parts):
+            return
+        key = state_key(remaining, rects)
+        if key in seen:
+            return
+        seen.add(key)
+
+        # Largest-first finds a strong incumbent early; every concrete part is
+        # still explored, so a smaller horizontal band can precede it when that
+        # is the only complete solution.
+        ordered = sorted(
+            enumerate(remaining),
+            key=lambda item: (-(item[1].width * item[1].height), -max(item[1].width, item[1].height), item[1].name, id(item[1])),
+        )
+        for part_index, part in ordered:
+            for rect_index, (x, y, width, height) in enumerate(rects):
+                for variant in _part_variants(part, stock):
+                    if variant.width > width + EPS or variant.height > height + EPS:
+                        continue
+                    next_remaining = remaining[:part_index] + remaining[part_index + 1 :]
+                    placement = PlacedSheetPart(part, x, y, variant.width, variant.height, variant.rotated)
+                    # A guillotine cut can first separate either the right band
+                    # or the bottom band.  Enumerating both keeps this fallback
+                    # independent of the vertical-strip heuristic.
+                    residual_sets: list[list[Rect]] = []
+                    right_width = width - variant.width - kerf
+                    bottom_height = height - variant.height - kerf
+                    horizontal_first = list(rects[:rect_index] + rects[rect_index + 1 :])
+                    if bottom_height > EPS:
+                        horizontal_first.append((x, y + variant.height + kerf, width, bottom_height))
+                    if right_width > EPS:
+                        horizontal_first.append((x + variant.width + kerf, y, right_width, variant.height))
+                    residual_sets.append(horizontal_first)
+
+                    vertical_first = list(rects[:rect_index] + rects[rect_index + 1 :])
+                    if right_width > EPS:
+                        vertical_first.append((x + variant.width + kerf, y, right_width, height))
+                    if bottom_height > EPS:
+                        vertical_first.append((x, y + variant.height + kerf, variant.width, bottom_height))
+                    residual_sets.append(vertical_first)
+
+                    for next_rects in residual_sets:
+                        descend(next_remaining, next_rects, [*placed, placement], placed_ids | {id(part)})
+                        if len(best_parts) == len(parts) or nodes >= node_budget:
+                            return
+
+    descend(parts, [(margin, margin, usable_width, usable_height)], [], set())
+    return best_parts, best_ids
+
+
+def _build_exact_small_guillotine_candidates(
+    stock: list[SheetStock],
+    parts: list[SheetPart],
+    kerf: float,
+    margin: float,
+    min_reusable_size: float,
+    include_rotated_stock: bool = True,
+) -> list[OptimizationResult]:
+    """Add bounded complete-search candidates for small sheet-cutting jobs."""
+    expanded = _expand_parts(parts)
+    # Keep the exhaustive fallback tightly bounded.  Larger BOMs are handled by
+    # the production heuristics and would turn the candidate search exponential.
+    if not expanded or len(expanded) > 8:
+        return []
+
+    candidates: list[OptimizationResult] = []
+    for orientation_name, oriented_stock in _stock_orientation_sets(stock):
+        if not include_rotated_stock and orientation_name != "stock 0deg":
+            continue
+        remaining = list(expanded)
+        layouts: list[SheetLayout] = []
+        for stock_item in _expand_stock(oriented_stock):
+            if not remaining:
+                break
+            placements, placed_ids = _pack_exact_small_guillotine_sheet(
+                stock_item, remaining, kerf, margin, node_budget=20_000
+            )
+            if not placements:
+                continue
+            layout = SheetLayout(stock=stock_item, sheet_index=len(layouts) + 1, parts=placements)
+            layout.vertical_segments = [{
+                "index": 1,
+                "x": round(margin, 3),
+                "width": round(stock_item.width - margin * 2, 3),
+                "right": round(stock_item.width - margin, 3),
+                "source": "exact-small-guillotine",
+            }]
+            layouts.append(layout)
+            remaining = [part for part in remaining if id(part) not in placed_ids]
+        if not layouts:
+            continue
+        result = OptimizationResult(
+            job_type="sheet",
+            algorithm="Exact Small Guillotine Candidate",
+            sheet_layouts=layouts,
+            unplaced_sheet_parts=remaining,
+            total_cost=sum(layout.stock.price for layout in layouts),
+            messages=[f"Selected packing candidate: bounded exact guillotine / {orientation_name}"],
+        )
+        annotate_result_metrics(result, kerf, min_reusable_size)
+        candidates.append(result)
+    return candidates
+
+
 def _build_vertical_strip_candidates(
     stock: list[SheetStock],
     parts: list[SheetPart],
@@ -2853,6 +3052,287 @@ def _build_uniform_grid_candidates(
         )
         if candidate is not None:
             candidates.append(candidate)
+    return candidates
+
+
+def _repeated_mixed_grid_key(part: SheetPart) -> tuple[object, ...]:
+    """Identity used by the mixed two-zone grid candidate.
+
+    This candidate deliberately handles one repeated, rotatable formatka.  It
+    complements the strip builders for cases where a row of one orientation
+    over two rows of the other leaves a narrow, useful side strip.  The old
+    candidates missed that topology and could leave a whole additional part
+    off a 3000 x 1500 sheet.
+    """
+    return (
+        part.name,
+        round(part.width, 4),
+        round(part.height, 4),
+        part.material,
+        round(part.thickness, 4),
+        part.allow_rotation,
+        part.grain_direction,
+    )
+
+
+def _draw_repeated_mixed_grid_layout(
+    stock: SheetStock,
+    sheet_index: int,
+    parts: list[SheetPart],
+    narrow: _PartVariant,
+    wide: _PartVariant,
+    top_columns: int,
+    wide_columns: int,
+    wide_rows: int,
+    side_columns: int,
+    side_rows: int,
+    kerf: float,
+    margin: float,
+) -> SheetLayout | None:
+    """Draw a guillotine-safe mixed grid with a separate narrow side strip."""
+    main_width = max(
+        _span_size(top_columns, narrow.width, kerf),
+        _span_size(wide_columns, wide.width, kerf),
+    )
+    main_has_parts = top_columns > 0 or (wide_columns > 0 and wide_rows > 0)
+    if not main_has_parts and side_columns <= 0:
+        return None
+
+    layout = SheetLayout(stock=stock, sheet_index=sheet_index)
+    part_index = 0
+
+    def take_part() -> SheetPart | None:
+        nonlocal part_index
+        if part_index >= len(parts):
+            return None
+        part = parts[part_index]
+        part_index += 1
+        return part
+
+    if main_has_parts:
+        y = margin
+        if top_columns:
+            for column in range(top_columns):
+                part = take_part()
+                if part is None:
+                    break
+                layout.parts.append(
+                    PlacedSheetPart(
+                        part, margin + column * (narrow.width + kerf), y,
+                        narrow.width, narrow.height, narrow.rotated,
+                    )
+                )
+            y += narrow.height + (kerf if wide_columns and wide_rows else 0.0)
+        for row in range(wide_rows):
+            for column in range(wide_columns):
+                part = take_part()
+                if part is None:
+                    break
+                layout.parts.append(
+                    PlacedSheetPart(
+                        part, margin + column * (wide.width + kerf), y,
+                        wide.width, wide.height, wide.rotated,
+                    )
+                )
+            if part_index >= len(parts):
+                break
+            y += wide.height + kerf
+        layout.vertical_segments.append(
+            {
+                "index": 1,
+                "x": round(margin, 3),
+                "width": round(main_width, 3),
+                "right": round(margin + main_width, 3),
+                "source": "repeated-mixed-grid-main",
+            }
+        )
+
+    side_x = margin + main_width + (kerf if main_has_parts else 0.0)
+    for side_column in range(side_columns):
+        if part_index >= len(parts):
+            break
+        x = side_x + side_column * (narrow.width + kerf)
+        before = part_index
+        for row in range(side_rows):
+            part = take_part()
+            if part is None:
+                break
+            layout.parts.append(
+                PlacedSheetPart(
+                    part, x, margin + row * (narrow.height + kerf),
+                    narrow.width, narrow.height, narrow.rotated,
+                )
+            )
+        if part_index > before:
+            layout.vertical_segments.append(
+                {
+                    "index": len(layout.vertical_segments) + 1,
+                    "x": round(x, 3),
+                    "width": round(narrow.width, 3),
+                    "right": round(x + narrow.width, 3),
+                    "source": "repeated-mixed-grid-side",
+                }
+            )
+
+    return layout if layout.parts else None
+
+
+def _best_repeated_mixed_grid_layout(
+    stock: SheetStock,
+    parts: list[SheetPart],
+    kerf: float,
+    margin: float,
+) -> SheetLayout | None:
+    if not parts:
+        return None
+    variants = _part_variants(parts[0], stock)
+    if len(variants) < 2:
+        return None
+    narrow = min(variants, key=lambda variant: (variant.width, -variant.height, variant.rotated))
+    wide = max(variants, key=lambda variant: (variant.width, -variant.height, not variant.rotated))
+    if narrow.width >= wide.width - EPS or narrow.height <= wide.height + EPS:
+        return None
+    # Extremely elongated pieces are structural strips, not grid tiles.  The
+    # dedicated vertical-strip candidates retain their production-friendly
+    # residual bands; forcing such pieces through this two-zone grid can make
+    # a valid long-strip layout needlessly taller.
+    aspect_ratio = max(wide.width, wide.height) / max(min(wide.width, wide.height), EPS)
+    if aspect_ratio > 4.0:
+        return None
+    # Near-square parts are already covered optimally by the uniform-grid
+    # candidate.  Searching split strips for them adds many equivalent plans
+    # without freeing a meaningful side band.
+    if aspect_ratio < 1.20:
+        return None
+
+    usable_width = stock.width - margin * 2
+    usable_height = stock.height - margin * 2
+    max_narrow_columns = int((usable_width + kerf + EPS) // (narrow.width + kerf))
+    max_wide_columns = int((usable_width + kerf + EPS) // (wide.width + kerf))
+    max_side_rows = int((usable_height + kerf + EPS) // (narrow.height + kerf))
+    if max_narrow_columns <= 0 or max_wide_columns <= 0 or max_side_rows <= 0:
+        return None
+
+    def grid_values(maximum: int) -> list[int]:
+        """Keep the topology search dense for small sheets and bounded for grids."""
+        if maximum <= 8:
+            return list(range(maximum + 1))
+        step = max(1, math.ceil(maximum / 6))
+        values = {0, 1, 2, 3, maximum, maximum - 1, maximum - 2}
+        values.update(range(0, maximum + 1, step))
+        return sorted(value for value in values if 0 <= value <= maximum)
+
+    best_layout: SheetLayout | None = None
+    best_score: tuple[float, ...] | None = None
+    # The dimensions bound the search to a small grid (typically below 1,000
+    # plans) while covering all meaningful strip/row combinations.
+    for top_columns in grid_values(max_narrow_columns):
+        top_height = narrow.height if top_columns else 0.0
+        for wide_columns in grid_values(max_wide_columns):
+            if not top_columns and not wide_columns:
+                continue
+            main_width = max(
+                _span_size(top_columns, narrow.width, kerf),
+                _span_size(wide_columns, wide.width, kerf),
+            )
+            if main_width > usable_width + EPS:
+                continue
+            available_height = usable_height - top_height - (kerf if top_columns and wide_columns else 0.0)
+            max_wide_rows = (
+                int((available_height + kerf + EPS) // (wide.height + kerf))
+                if wide_columns and available_height >= wide.height - EPS
+                else 0
+            )
+            for wide_rows in grid_values(max_wide_rows):
+                if not top_columns and not wide_rows:
+                    continue
+                used_main_height = (
+                    top_height
+                    + (kerf if top_columns and wide_rows else 0.0)
+                    + _span_size(wide_rows, wide.height, kerf)
+                )
+                if used_main_height > usable_height + EPS:
+                    continue
+                side_space = usable_width - main_width - (kerf if main_width > EPS else 0.0)
+                max_side_columns = int((side_space + kerf + EPS) // (narrow.width + kerf))
+                for side_columns in grid_values(max(0, max_side_columns)):
+                    capacity = top_columns + wide_columns * wide_rows + side_columns * max_side_rows
+                    if capacity <= 0:
+                        continue
+                    layout = _draw_repeated_mixed_grid_layout(
+                        stock, 1, parts[: min(len(parts), capacity)], narrow, wide,
+                        top_columns, wide_columns, wide_rows, side_columns, max_side_rows,
+                        kerf, margin,
+                    )
+                    if layout is None:
+                        continue
+                    valid, _errors = validate_guillotine_feasibility(layout, kerf)
+                    if not valid:
+                        continue
+                    placed = len(layout.parts)
+                    # First fill the sheet.  Once equal, use exactly the
+                    # production axis chosen by _saved_axis, then favour a
+                    # compact bounding box and fewer strips.
+                    score = (
+                        -placed,
+                        _saved_used_length(layout),
+                        _saved_consumed_area(layout),
+                        layout.used_width * layout.used_height,
+                        len(layout.vertical_segments),
+                    )
+                    if best_score is None or score < best_score:
+                        best_layout = layout
+                        best_score = score
+    return best_layout
+
+
+def _build_repeated_mixed_grid_candidates(
+    stock: list[SheetStock],
+    parts: list[SheetPart],
+    kerf: float,
+    margin: float,
+    min_reusable_size: float,
+    include_rotated_stock: bool = True,
+) -> list[OptimizationResult]:
+    """Build multi-sheet candidates for repeated parts with both orientations."""
+    expanded = _expand_parts(parts)
+    if len(expanded) < 2 or len({_repeated_mixed_grid_key(part) for part in expanded}) != 1:
+        return []
+
+    candidates: list[OptimizationResult] = []
+    for orientation_name, oriented_stock in _stock_orientation_sets(stock):
+        if not include_rotated_stock and orientation_name != "stock 0deg":
+            continue
+        remaining = list(expanded)
+        layouts: list[SheetLayout] = []
+        for item in _expand_stock(oriented_stock):
+            layout = _best_repeated_mixed_grid_layout(item, remaining, kerf, margin)
+            if layout is None:
+                continue
+            layout.sheet_index = len(layouts) + 1
+            layouts.append(layout)
+            remaining = remaining[len(layout.parts):]
+            if not remaining:
+                break
+        if not layouts:
+            continue
+        used_area = sum(layout.used_area for layout in layouts)
+        total_area = sum(layout.consumed_area for layout in layouts)
+        result = OptimizationResult(
+            job_type="sheet",
+            algorithm="Repeated Mixed Grid Candidate",
+            sheet_layouts=layouts,
+            unplaced_sheet_parts=remaining,
+            total_cost=sum(layout.stock.price for layout in layouts),
+            waste=max(0.0, total_area - used_area),
+            utilization=used_area / total_area * 100.0 if total_area else 0.0,
+            messages=[
+                f"Selected packing candidate: repeated mixed grid / {orientation_name}",
+                "mixed grid combines a top narrow row, wide lower rows and a narrow side strip",
+            ],
+        )
+        annotate_result_metrics(result, kerf, min_reusable_size)
+        candidates.append(result)
     return candidates
 
 
@@ -3723,6 +4203,16 @@ def optimize_2d_vertical_segmented(
         )
     )
     candidates.extend(
+        _build_repeated_mixed_grid_candidates(
+            stock,
+            parts,
+            kerf,
+            margin,
+            min_reusable_size,
+            include_rotated_stock=True,
+        )
+    )
+    candidates.extend(
         _build_vertical_strip_candidates(
             stock,
             parts,
@@ -3843,6 +4333,26 @@ def optimize_2d_vertical_segmented(
                 candidates[-1].messages.append(
                     f"T2-5 reorder rescue added {added} extra candidates"
                 )
+
+    # Invoke the bounded exhaustive topology search only as a rescue.  Running
+    # it for every small, already-complete order adds cost without improving the
+    # production result; it is needed precisely when all regular candidates
+    # leave at least one required formatka unplaced.
+    if (
+        sum(max(0, int(part.quantity)) for part in parts) <= 8
+        and candidates
+        and not any(not candidate.unplaced_sheet_parts for candidate in candidates)
+    ):
+        candidates.extend(
+            _build_exact_small_guillotine_candidates(
+                stock,
+                parts,
+                kerf,
+                margin,
+                min_reusable_size,
+                include_rotated_stock=True,
+            )
+        )
 
     for candidate in candidates:
         annotate_guillotine_result(candidate, kerf, min_reusable_size)

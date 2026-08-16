@@ -48,6 +48,9 @@ class FormatCutMetrics:
     waste_m2: float = 0.0
     reusable_m2: float = 0.0
     gross_m2: float = 0.0
+    # Effective supplier rate of the board(s) that actually produced this
+    # format. It is carried from SheetStock.price, not from a stale UI rate.
+    catalog_price_m2: float = 0.0
     time_s: float = 0.0     # attributed cutting time for this format (s)
 
 
@@ -127,6 +130,7 @@ def compute_cut_summary(result: OptimizationResult, feed_m_per_min: float | None
     layouts = _iter_layouts(result)
     stack_multipliers = _stack_time_multipliers(layouts)
     weighted_by_key: dict[tuple, list[float]] = {}
+    catalog_rate_by_key: dict[tuple, list[float]] = {}
 
     for layout in layouts:
         time_factor = stack_multipliers.get(id(layout), 1.0)
@@ -154,6 +158,15 @@ def compute_cut_summary(result: OptimizationResult, feed_m_per_min: float | None
             metrics.cuts += 2
             metrics.saw_m += (placement.width + placement.height) / 1000.0
             metrics.area_m2 += (placement.width * placement.height) / 1_000_000.0
+            nominal_width = float(getattr(layout.stock, "nominal_width", 0.0) or layout.stock.width)
+            nominal_height = float(getattr(layout.stock, "nominal_height", 0.0) or layout.stock.height)
+            board_area_m2 = (nominal_width * nominal_height) / 1_000_000.0
+            board_rate = float(getattr(layout.stock, "price", 0.0) or 0.0) / board_area_m2 if board_area_m2 > 0 else 0.0
+            if board_rate > 0:
+                price_weight = catalog_rate_by_key.setdefault(key, [0.0, 0.0])
+                part_area_m2 = (placement.width * placement.height) / 1_000_000.0
+                price_weight[0] += board_rate * part_area_m2
+                price_weight[1] += part_area_m2
             weighted = weighted_by_key.setdefault(key, [0.0, 0.0, 0.0, 0.0])
             weighted[0] += (placement.width + placement.height) / 1000.0 * time_factor
             weighted[1] += 2.0 * time_factor
@@ -161,6 +174,10 @@ def compute_cut_summary(result: OptimizationResult, feed_m_per_min: float | None
             weighted[3] += (1.0 if placement.rotated else 0.0) * time_factor
 
     summary = CutSummary(formats=[by_key[k] for k in order])
+    for key, metrics in by_key.items():
+        weighted_rate, weighted_area = catalog_rate_by_key.get(key, [0.0, 0.0])
+        if weighted_area > 0:
+            metrics.catalog_price_m2 = weighted_rate / weighted_area
     summary.total_pieces = sum(f.pieces for f in summary.formats)
     summary.total_rotated = sum(f.rotated for f in summary.formats)
     summary.total_area_m2 = sum(f.area_m2 for f in summary.formats)

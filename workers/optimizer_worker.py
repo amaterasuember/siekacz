@@ -19,6 +19,7 @@ from algorithms.part_classification import is_small_filler_part
 from algorithms.two_d_maxrects import optimize_2d_maxrects
 from algorithms.two_d_skyline import optimize_2d_skyline
 from algorithms.two_d_vertical_segmented import optimize_2d_vertical_segmented
+from algorithms.smart_stock_mix import optimize_smart_stock_mix
 from core.models import OptimizationResult, Project, SheetPart, SheetStock, materials_are_compatible
 
 
@@ -317,28 +318,96 @@ def _missing_stock_for(effective_stock: list[SheetStock], missing_parts: list[Sh
         parts_by_material[(part.material, round(part.thickness, 4))].append(part)
 
     virtual_stock: list[SheetStock] = []
-    seen: set[tuple[object, ...]] = set()
+
+    def profile(stock: SheetStock) -> tuple[float, float]:
+        # Keep the physical axis order.  Sorting a profile would silently rotate
+        # grain-constrained/non-rotatable stock in the virtual-sheet path.
+        return round(float(stock.width), 4), round(float(stock.height), 4)
+
+    def part_fits(part: SheetPart, width: float, height: float) -> bool:
+        direct = part.width <= width + 0.001 and part.height <= height + 0.001
+        rotated = (
+            part.allow_rotation
+            and part.grain_direction == "none"
+            and part.height <= width + 0.001
+            and part.width <= height + 0.001
+        )
+        return direct or rotated
+
     for (material, thickness), parts in parts_by_material.items():
         candidates = [
             item
             for item in effective_stock
             if materials_are_compatible(item.material, material) and abs(item.thickness - thickness) < 0.001
         ]
-        for item in candidates:
-            signature = (
-                item.material,
-                round(item.thickness, 4),
-                round(item.width, 4),
-                round(item.height, 4),
-                item.grain_direction,
-                item.allow_rotation,
-                round(item.min_offcut_width, 4),
-                round(item.min_offcut_height, 4),
+        exact_candidates = [
+            item for item in candidates
+            if str(item.material or "").strip().casefold() == str(material or "").strip().casefold()
+        ]
+        # A virtual/missing board means an additional purchase of a profile the
+        # user actually made available.  Never invent a fallback supplier size:
+        # doing so can create a convincing but physically impossible plan.
+        # A full board that fits every part a small remnant fits dominates that
+        # remnant.  Do not offer both: otherwise a missing-board run can select
+        # the remnant first and report an unnecessarily fragmented purchase.
+        # Non-dominated real profiles are retained for genuinely complementary
+        # formats (for example, two non-rotatable grain directions).
+        usable_candidates = exact_candidates or candidates
+        templates_by_profile: dict[tuple[float, float], SheetStock] = {}
+        for candidate in usable_candidates:
+            if any(part_fits(part, candidate.width, candidate.height) for part in parts):
+                templates_by_profile.setdefault(profile(candidate), candidate)
+
+        profile_candidates: list[tuple[tuple[float, float], SheetStock, set[int], float]] = []
+        for candidate_profile, candidate in templates_by_profile.items():
+            fitting_part_indexes = {
+                index
+                for index, part in enumerate(parts)
+                if part_fits(part, candidate.width, candidate.height)
+            }
+            profile_candidates.append(
+                (
+                    candidate_profile,
+                    candidate,
+                    fitting_part_indexes,
+                    float(candidate.width) * float(candidate.height),
+                )
             )
-            if signature in seen:
-                continue
-            seen.add(signature)
-            virtual_stock.append(replace(item, quantity=max(1, len(parts)), price=0.0, source="missing"))
+
+        non_dominated_profiles: list[tuple[tuple[float, float], SheetStock]] = []
+        for index, (candidate_profile, candidate, fitting_parts, area) in enumerate(profile_candidates):
+            dominated = any(
+                other_index != index
+                and fitting_parts <= other_fitting_parts
+                and other_area >= area - 0.001
+                and (
+                    other_area > area + 0.001
+                    or other_profile < candidate_profile
+                )
+                for other_index, (other_profile, _other_candidate, other_fitting_parts, other_area)
+                in enumerate(profile_candidates)
+            )
+            if not dominated:
+                non_dominated_profiles.append((candidate_profile, candidate))
+
+        quantity = max(1, sum(max(0, int(part.quantity)) for part in parts))
+        for (width, height), template in non_dominated_profiles:
+            virtual_stock.append(
+                replace(
+                    template,
+                    material=material or template.material,
+                    thickness=thickness,
+                    width=width,
+                    height=height,
+                    nominal_width=width,
+                    nominal_height=height,
+                    quantity=quantity,
+                    price=0.0,
+                    source="missing",
+                    stack_size=1,
+                    priority=0,
+                )
+            )
     return virtual_stock
 
 
@@ -451,6 +520,7 @@ def _repack_sparse_real_board_with_missing_stock(
 def _seed_missing_layouts_from_real_boards(
     result: OptimizationResult,
     missing_parts: list[SheetPart],
+    allowed_stock_profiles: set[tuple[float, float]] | None = None,
 ) -> tuple[list, list[SheetPart]]:
     """Reuse a proven real-board pattern before optimizing the final remainder.
 
@@ -465,6 +535,9 @@ def _seed_missing_layouts_from_real_boards(
 
     for template in result.sheet_layouts:
         if not template.parts:
+            continue
+        template_profile = tuple(sorted((round(template.stock.width, 4), round(template.stock.height, 4))))
+        if allowed_stock_profiles is not None and template_profile not in allowed_stock_profiles:
             continue
         # A sparse real board is not a production pattern worth cloning.  Let
         # the full candidate ensemble improve it instead of reproducing its
@@ -545,25 +618,36 @@ def _attach_missing_sheet_layouts(
 
     # Names of the truly-required unplaced parts — used to filter the
     # missing-run output and decide what counts as "still unplaced".
-    missing_part_names: set[str] = {p.name for p in missing_parts}
+    missing_part_keys = {_missing_part_key(p) for p in missing_parts}
 
     # Collect small filler parts from the main sheets and include them as
     # bonus-cut candidates in the missing-sheet run.  They fill waste areas
     # below / beside large structural parts (e.g. the gap under a 1023×404
     # panel).  Each bonus copy is tagged ``is_waste_fill=True`` so downstream
     # code (reports, BOM counts) can exclude them from the required-part total.
-    bonus_filler_map: dict[str, SheetPart] = {}
+    bonus_filler_map: dict[tuple[object, ...], SheetPart] = {}
     for layout in result.sheet_layouts:
         for placed in layout.parts:
             p = placed.part
-            if p.name in missing_part_names or p.name in bonus_filler_map:
+            part_key = _missing_part_key(p)
+            if part_key in missing_part_keys or part_key in bonus_filler_map:
                 continue
             if _is_bonus_filler_for_missing_sheets(p, layout.stock):
-                bonus_filler_map[p.name] = replace(p, is_waste_fill=True)
+                bonus_filler_map[part_key] = replace(p, is_waste_fill=True)
 
+    # Repeating a real cutting card is useful only when it uses the same stock
+    # profile selected for the virtual run.  Otherwise a short 2000 mm card
+    # could be cloned before the normal solver gets a chance to place those
+    # parts together on the available 3000 mm virtual board.
+    virtual_reference = _missing_stock_for(effective_stock, missing_parts)
+    virtual_profiles = {
+        tuple(sorted((round(item.width, 4), round(item.height, 4))))
+        for item in virtual_reference
+    }
     seeded_layouts, remaining_missing_parts = _seed_missing_layouts_from_real_boards(
         result,
         missing_parts,
+        allowed_stock_profiles=virtual_profiles,
     )
     bonus_fillers = list(bonus_filler_map.values())
     all_parts_for_missing = remaining_missing_parts + bonus_fillers
@@ -577,7 +661,13 @@ def _attach_missing_sheet_layouts(
             progress_callback=progress_callback,
         )
     else:
-        missing_result = OptimizationResult(job_type="sheet", algorithm=algorithm)
+        # No real available profile fits any remaining part.  Preserve every
+        # required instance as unplaced rather than silently dropping it.
+        missing_result = OptimizationResult(
+            job_type="sheet",
+            algorithm=algorithm,
+            unplaced_sheet_parts=list(all_parts_for_missing),
+        )
 
     # Sort missing sheets so the most-used (widest) appears first.  Users expect
     # the layout to fill sheets in order — a fuller sheet 2 followed by a
@@ -598,7 +688,7 @@ def _attach_missing_sheet_layouts(
     # discarded — they are optional waste cuts, not required BOM parts.
     result.unplaced_sheet_parts = [
         p for p in missing_result.unplaced_sheet_parts
-        if p.name in missing_part_names
+        if _missing_part_key(p) in missing_part_keys
     ]
     result.messages.append(f"Brakuje {len(result.missing_sheet_layouts)} dodatkowych płyt na {len(missing_parts)} formatek.")
 
@@ -622,19 +712,33 @@ def optimize_sheet_project(project: Project, progress_callback: ProgressCallback
     ]
     execution_mode = "processes" if getattr(settings, "multi_core", True) else "sequential"
     _report_progress(progress_callback, 2, "Przygotowuję dane rozkroju")
-    result = _run_sheet_algorithm(
-        settings.algorithm,
-        effective_stock,
-        sheet_parts,
-        effective_kerf,
-        settings.margin,
-        settings.mode,
-        settings.min_reusable_offcut_size,
-        settings.cutting_mode,
-        settings.optimization_mode,
-        execution_mode=execution_mode,
-        progress_callback=_scaled_progress(progress_callback, 5, 84),
-    )
+    if bool(getattr(settings, "smart_stock_mode", False)):
+        _report_progress(progress_callback, 5, "Porównuję dostępne formaty płyt")
+        result = optimize_smart_stock_mix(
+            effective_stock,
+            sheet_parts,
+            effective_kerf,
+            settings.margin,
+            settings.mode,
+            settings.min_reusable_offcut_size,
+            settings.cutting_mode,
+            settings.optimization_mode,
+        )
+        _report_progress(progress_callback, 84, "Wybrałem inteligentną mieszankę formatów")
+    else:
+        result = _run_sheet_algorithm(
+            settings.algorithm,
+            effective_stock,
+            sheet_parts,
+            effective_kerf,
+            settings.margin,
+            settings.mode,
+            settings.min_reusable_offcut_size,
+            settings.cutting_mode,
+            settings.optimization_mode,
+            execution_mode=execution_mode,
+            progress_callback=_scaled_progress(progress_callback, 5, 84),
+        )
     _report_progress(progress_callback, 86, "Sprawdzam brakujące płyty")
     result = _attach_missing_sheet_layouts(
         result,

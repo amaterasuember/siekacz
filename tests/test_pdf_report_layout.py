@@ -70,7 +70,7 @@ def test_group_caption_contains_plate_thickness_and_explicit_numbers() -> None:
     )
     drawing = next(item for item in story if isinstance(item, SheetFlowable))
     assert "PA6 · gr. 18 mm" in drawing.caption
-    assert "nr 1 i 2" in drawing.caption
+    assert "nr 1–2" in drawing.caption
     assert "×2" not in drawing.caption
 
     legends = [item.text for item in story if isinstance(item, Paragraph) and "Legenda formatek" in item.text]

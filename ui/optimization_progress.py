@@ -18,6 +18,8 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QWidget
 
+from ui.transport_history_facts import ALL_FACTS
+
 
 # ---------------------------------------------------------------------------
 # Shared state data-class (kept for compatibility)
@@ -382,10 +384,9 @@ _WORLD_FACTS: tuple[str, ...] = (
     "Komety tworzą warkocz skierowany od Słońca, niezależnie od kierunku ich lotu.",
 )
 
-# Keep the visible deck at an even one hundred facts.  The surplus at the end
-# is intentional editorial reserve for future rotations without weakening the
-# no-repeat contract of the active deck.
-_SIMS_MESSAGES = _WORLD_FACTS[:100]
+# The progress overlay walks all 200 curated transport/history facts as a
+# shuffle-bag.  A card cannot repeat until the entire deck has been shown.
+_SIMS_MESSAGES = ALL_FACTS
 
 _SAMURAI_FRAMES: tuple[tuple[str, str], ...] = (
     ("01  IDLE STANCE", r"""
@@ -643,8 +644,14 @@ class OptimizationProgressOverlay(QWidget):
         # run; advancing the deck here guarantees a fresh fact every time and no
         # repeats until the whole deck has been shown.
         self._advance_message()
-        requested_animation = getattr(getattr(project, "settings", None), "animation_mode", self._animation_mode)
-        self._animation_mode = "economy" if requested_animation == "economy" else "quality"
+        requested_animation = str(
+            getattr(getattr(project, "settings", None), "animation_mode", self._animation_mode)
+        )
+        self._animation_mode = (
+            requested_animation
+            if requested_animation in {"economy", "quality"}
+            else "economy"
+        )
         if project and not getattr(project.settings, "multi_core", True):
             self._msg_label = "Uwaga: Wielowątkowość jest wyłączona. Proces obliczania się wydłuży."
             # Set the phase slightly forward so it holds longer before fading out
@@ -1160,18 +1167,21 @@ class OptimizationProgressOverlay(QWidget):
 
         # Shimmer effect on the fill
         shimmer_pos = (elapsed_s * 0.55) % 1.4 - 0.2  # -0.2 .. 1.2
+        shimmer_center = max(0.0, min(1.0, shimmer_pos))
+        shimmer_left = max(0.0, shimmer_center - 0.15)
+        shimmer_right = min(1.0, shimmer_center + 0.15)
         fill_grad = QLinearGradient(bar_x, bar_y, bar_x + fill_w, bar_y)
         if is_light:
             fill_grad.setColorAt(0.0, QColor(30, 80, 200, int(200 * fade_in)))
-            fill_grad.setColorAt(max(0.0, shimmer_pos - 0.15), QColor(30, 80, 200, int(200 * fade_in)))
-            fill_grad.setColorAt(min(1.0, shimmer_pos), QColor(100, 160, 255, int(240 * fade_in)))
-            fill_grad.setColorAt(min(1.0, shimmer_pos + 0.15), QColor(30, 80, 200, int(200 * fade_in)))
+            fill_grad.setColorAt(shimmer_left, QColor(30, 80, 200, int(200 * fade_in)))
+            fill_grad.setColorAt(shimmer_center, QColor(100, 160, 255, int(240 * fade_in)))
+            fill_grad.setColorAt(shimmer_right, QColor(30, 80, 200, int(200 * fade_in)))
             fill_grad.setColorAt(1.0, QColor(30, 80, 200, int(200 * fade_in)))
         else:
             fill_grad.setColorAt(0.0, QColor(60, 120, 255, int(220 * fade_in)))
-            fill_grad.setColorAt(max(0.0, shimmer_pos - 0.15), QColor(60, 120, 255, int(220 * fade_in)))
-            fill_grad.setColorAt(min(1.0, shimmer_pos), QColor(160, 210, 255, int(255 * fade_in)))
-            fill_grad.setColorAt(min(1.0, shimmer_pos + 0.15), QColor(60, 120, 255, int(220 * fade_in)))
+            fill_grad.setColorAt(shimmer_left, QColor(60, 120, 255, int(220 * fade_in)))
+            fill_grad.setColorAt(shimmer_center, QColor(160, 210, 255, int(255 * fade_in)))
+            fill_grad.setColorAt(shimmer_right, QColor(60, 120, 255, int(220 * fade_in)))
             fill_grad.setColorAt(1.0, QColor(60, 120, 255, int(220 * fade_in)))
 
         if fill_w > bar_h:

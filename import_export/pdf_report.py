@@ -20,7 +20,7 @@ from reportlab.platypus import (
 )
 
 from algorithms.cut_metrics import compute_cut_summary
-from algorithms.layout_grouping import group_identical_layouts
+from algorithms.layout_grouping import format_sheet_number_ranges, group_identical_layouts
 from algorithms.layout_scoring import format_cut_time
 from core.models import OptimizationResult, Project, SheetLayout
 
@@ -594,13 +594,8 @@ def _append_drawings(story, groups, styles, missing: bool, block_w: float, block
         util = f"{layout.utilization:.0f}%"
         cuts = int(getattr(layout, "cut_count", 0))
         t = format_cut_time(getattr(layout, "estimated_cut_time_s", 0.0))
-        sheet_numbers = [str(value) for value in getattr(group, "display_sheet_indices", [])] or [str(getattr(layout, "display_sheet_index", sheet_no))]
-        if len(sheet_numbers) == 1:
-            number_text = f"nr {sheet_numbers[0]}"
-        elif len(sheet_numbers) == 2:
-            number_text = f"nr {sheet_numbers[0]} i {sheet_numbers[1]}"
-        else:
-            number_text = "nr " + ", ".join(sheet_numbers[:-1]) + f" i {sheet_numbers[-1]}"
+        sheet_numbers = list(getattr(group, "display_sheet_indices", [])) or [getattr(layout, "display_sheet_index", sheet_no)]
+        number_text = f"nr {format_sheet_number_ranges(sheet_numbers)}"
         thickness = float(getattr(layout.stock, "thickness", 0.0) or 0.0)
         missing_text = "brakująca, " if missing else ""
         material = str(getattr(layout.stock, "material", "") or "Materiał").strip()

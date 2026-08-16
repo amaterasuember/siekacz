@@ -1,0 +1,163 @@
+name: Release multiplatform
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Wersja SemVer, np. 3.3.0"
+        required: true
+        type: string
+      notes:
+        description: "Changelog wydania"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Validate version and update source metadata
+        id: meta
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          python - <<'PY'
+          import os, re
+          from pathlib import Path
+          version = os.environ["VERSION"].strip().lstrip("vV")
+          if not re.fullmatch(r"\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?", version):
+              raise SystemExit(f"Invalid semantic version: {version}")
+          path = Path("app/version.py")
+          content = path.read_text(encoding="utf-8")
+          updated = re.sub(r'APP_VERSION\s*=\s*"[^"]+"', f'APP_VERSION = "{version}"', content)
+          if updated == content and f'APP_VERSION = "{version}"' not in content:
+              raise SystemExit("APP_VERSION assignment not found")
+          path.write_text(updated, encoding="utf-8")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"tag=v{version}\n")
+          PY
+      - name: Commit version and create release tag
+        env:
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/version.py
+          if ! git diff --cached --quiet; then
+            git commit -m "release: ${TAG}"
+            git push origin HEAD:main
+          fi
+          git tag "$TAG"
+          git push origin "$TAG"
+
+  windows:
+    needs: prepare
+    runs-on: windows-2022
+    env:
+      SIEKACZ_NO_PAUSE: "1"
+      VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+      - name: Build Windows installer
+        shell: cmd
+        run: scripts\BUILD_INSTALLER.bat
+      - name: Verify Windows Server compatibility and name asset
+        shell: pwsh
+        run: |
+          .\scripts\VERIFY_WINDOWS_SERVER.ps1
+          New-Item -ItemType Directory -Force dist\installers | Out-Null
+          Copy-Item "dist\installer\SIEKACZ9000_Setup_v$env:VERSION.exe" "dist\installers\SIEKACZ9000_Setup_v${env:VERSION}_windows-x64.exe"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installer-windows-x64
+          path: dist/installers/SIEKACZ9000_Setup_v*_windows-x64.exe
+          if-no-files-found: error
+
+  macos:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15-intel
+            platform: macos-x64
+          - runner: macos-15
+            platform: macos-arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+      - name: Build macOS DMG
+        run: bash scripts/build_macos.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installer-${{ matrix.platform }}
+          path: dist/installers/SIEKACZ9000_v*_macos-*.dmg
+          if-no-files-found: error
+
+  linux:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            platform: linux-x86_64
+          - runner: ubuntu-24.04-arm
+            platform: linux-aarch64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+      - name: Install Linux GUI build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libegl1 libgl1 libxcb-cursor0 libxkbcommon-x11-0
+      - name: Build Linux AppImage
+        run: bash scripts/build_linux.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installer-${{ matrix.platform }}
+          path: dist/installers/SIEKACZ9000_v*_linux-*.AppImage
+          if-no-files-found: error
+
+  publish:
+    needs: [prepare, windows, macos, linux]
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.prepare.outputs.tag }}
+      RELEASE_NOTES: ${{ inputs.notes }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: installer-*
+          path: release-assets
+          merge-multiple: true
+      - name: Create GitHub release with all native packages
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          Path("release-notes.md").write_text(os.environ["RELEASE_NOTES"], encoding="utf-8")
+          PY
+          gh release create "$TAG" release-assets/* \
+            --title "SIEKACZ 9000 $TAG" \
+            --notes-file release-notes.md \
+            --verify-tag

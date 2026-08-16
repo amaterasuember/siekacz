@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import shutil
+import threading
 import uuid
+from contextlib import contextmanager
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
@@ -27,6 +31,55 @@ from database.db import APP_DIR
 
 
 HISTORY_PATH = APP_DIR / "siekacz_project_history.json"
+HISTORY_LOCK_PATH = APP_DIR / "siekacz_project_history.lock"
+_history_thread_lock = threading.RLock()
+
+
+class ProjectHistoryReadError(RuntimeError):
+    """Raised when a write would overwrite unreadable project history."""
+
+
+def _preserve_corrupt_history() -> Path | None:
+    """Keep a recoverable copy of an unreadable history file when possible."""
+    if not HISTORY_PATH.exists():
+        return None
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    backup = HISTORY_PATH.with_name(f"{HISTORY_PATH.stem}.corrupt-{timestamp}{HISTORY_PATH.suffix}")
+    try:
+        shutil.copy2(HISTORY_PATH, backup)
+        return backup
+    except OSError as exc:
+        _logger.error("Cannot preserve unreadable project history %s: %s", HISTORY_PATH, exc)
+        return None
+
+
+@contextmanager
+def _history_write_lock():
+    """Serialize read-modify-write operations across application instances."""
+    APP_DIR.mkdir(parents=True, exist_ok=True)
+    with _history_thread_lock:
+        with open(HISTORY_LOCK_PATH, "a+b") as handle:
+            handle.seek(0, os.SEEK_END)
+            if handle.tell() == 0:
+                handle.write(b"0")
+                handle.flush()
+            if os.name == "nt":
+                import msvcrt
+
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+            else:  # pragma: no cover - development and CI hosts
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                if os.name == "nt":
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:  # pragma: no cover - development and CI hosts
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def now_iso() -> str:
@@ -37,14 +90,33 @@ def new_project_id() -> str:
     return uuid.uuid4().hex
 
 
-def _read_file() -> list[dict[str, Any]]:
+def _read_file(*, for_write: bool = False) -> list[dict[str, Any]]:
     if not HISTORY_PATH.exists():
         return []
     try:
         data = json.loads(HISTORY_PATH.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError) as exc:
+        backup = _preserve_corrupt_history()
+        message = (
+            "Historia projektów jest nieczytelna i nie zostanie nadpisana. "
+            f"Ścieżka: {HISTORY_PATH}. "
+            + (f"Kopia diagnostyczna: {backup}. " if backup else "")
+            + f"Szczegóły: {exc}"
+        )
+        _logger.error(message)
+        if for_write:
+            raise ProjectHistoryReadError(message) from exc
         return []
     if not isinstance(data, list):
+        backup = _preserve_corrupt_history()
+        message = (
+            "Historia projektów ma nieprawidłowy format i nie zostanie nadpisana. "
+            f"Ścieżka: {HISTORY_PATH}. "
+            + (f"Kopia diagnostyczna: {backup}. " if backup else "")
+        )
+        _logger.error(message)
+        if for_write:
+            raise ProjectHistoryReadError(message)
         return []
     return [item for item in data if isinstance(item, dict)]
 
@@ -79,28 +151,30 @@ def get_project(project_id: str) -> dict[str, Any] | None:
 
 
 def save_project_record(record: dict[str, Any]) -> dict[str, Any]:
-    items = _read_file()
-    record = dict(record)
-    if not record.get("id"):
-        record["id"] = new_project_id()
-    existing_index = next((index for index, item in enumerate(items) if item.get("id") == record["id"]), None)
-    if existing_index is None:
-        record.setdefault("created_at", now_iso())
-        items.append(record)
-    else:
-        record.setdefault("created_at", items[existing_index].get("created_at") or now_iso())
-        items[existing_index] = record
-    record["modified_at"] = now_iso()
-    if existing_index is None:
-        items[-1] = record
-    else:
-        items[existing_index] = record
-    _write_file(items)
+    with _history_write_lock():
+        items = _read_file(for_write=True)
+        record = dict(record)
+        if not record.get("id"):
+            record["id"] = new_project_id()
+        existing_index = next((index for index, item in enumerate(items) if item.get("id") == record["id"]), None)
+        if existing_index is None:
+            record.setdefault("created_at", now_iso())
+            items.append(record)
+        else:
+            record.setdefault("created_at", items[existing_index].get("created_at") or now_iso())
+            items[existing_index] = record
+        record["modified_at"] = now_iso()
+        if existing_index is None:
+            items[-1] = record
+        else:
+            items[existing_index] = record
+        _write_file(items)
     return record
 
 
 def delete_project(project_id: str) -> None:
-    _write_file([item for item in _read_file() if item.get("id") != project_id])
+    with _history_write_lock():
+        _write_file([item for item in _read_file(for_write=True) if item.get("id") != project_id])
 
 
 def duplicate_project(project_id: str) -> dict[str, Any] | None:

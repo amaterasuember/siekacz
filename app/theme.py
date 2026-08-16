@@ -2130,7 +2130,8 @@ QPushButton#sideNavButton {
 QPushButton#topbarPrimary,
 QPushButton#topbarButton,
 QPushButton#topbarModeButton,
-QPushButton#topbarNavButton {
+QPushButton#topbarNavButton,
+QPushButton#topbarTutorial {
     border-radius: 8px;
     min-height: 38px;
     max-height: 38px;
@@ -2170,6 +2171,16 @@ QPushButton#topbarNavButton:checked {
 }
 QPushButton#topbarNavButton {
     min-width: 88px;
+}
+QPushButton#topbarTutorial {
+    min-width: 112px;
+    background: #b91c1c;
+    color: #ffffff;
+    border: 1px solid #ef4444;
+}
+QPushButton#topbarTutorial:hover {
+    background: #dc2626;
+    border-color: #f87171;
 }
 QPushButton#topbarButton {
     min-width: 112px;
@@ -2212,6 +2223,10 @@ QWidget#canvasStack {
     border-top-right-radius: 0;
     border-top: 1px solid rgba(148,163,184,0.10);
 }
+QGraphicsView#layoutView {
+    border-top-left-radius: 0;
+    border-top-right-radius: 0;
+}
 QPushButton#smallButton {
     min-height: 34px;
     padding-left: 12px;
@@ -2224,9 +2239,78 @@ QTableWidget, QTableView, QTableWidget#partsTable {
 """
 
 
+SMART_STOCK_DARK_QSS = """
+QCheckBox#smartStockMode {
+    background: rgba(255,255,255,0.045);
+    color: #dbe7f5;
+    border: 1px solid rgba(148,163,184,0.18);
+    border-radius: 8px;
+    padding: 5px 10px;
+    spacing: 8px;
+    font-weight: 700;
+}
+QCheckBox#smartStockMode:hover {
+    background: rgba(59,130,246,0.10);
+    border-color: rgba(91,158,255,0.45);
+}
+QCheckBox#smartStockMode:checked {
+    background: rgba(37,99,235,0.18);
+    color: #f8fbff;
+    border-color: rgba(91,158,255,0.62);
+}
+QCheckBox#smartStockMode::indicator {
+    width: 15px;
+    height: 15px;
+    border-radius: 5px;
+    border: 1px solid rgba(148,163,184,0.58);
+    background: #0b1524;
+}
+QCheckBox#smartStockMode::indicator:checked {
+    background: #2f80ff;
+    border-color: #79b2ff;
+}
+"""
+
+SMART_STOCK_LIGHT_QSS = """
+QCheckBox#smartStockMode {
+    background: #f7faff;
+    color: #243247;
+    border: 1px solid rgba(15,23,42,0.14);
+    border-radius: 8px;
+    padding: 5px 10px;
+    spacing: 8px;
+    font-weight: 700;
+}
+QCheckBox#smartStockMode:hover {
+    background: #eef5ff;
+    border-color: rgba(37,99,235,0.40);
+}
+QCheckBox#smartStockMode:checked {
+    background: #e7f0ff;
+    color: #163b78;
+    border-color: rgba(37,99,235,0.48);
+}
+QCheckBox#smartStockMode::indicator {
+    width: 15px;
+    height: 15px;
+    border-radius: 5px;
+    border: 1px solid rgba(15,23,42,0.28);
+    background: #ffffff;
+}
+QCheckBox#smartStockMode::indicator:checked {
+    background: #2f80ff;
+    border-color: #1d63db;
+}
+"""
+
 TABLE_ENTRY_INTERACTION_QSS = """
 QTableWidget#partsTable::item:hover:!selected {
     background: transparent;
+}
+QTableWidget#partsTable::item:selected {
+    background: rgba(37, 99, 235, 0.24);
+    border: 1px solid rgba(96, 165, 250, 0.88);
+    border-radius: 6px;
 }
 """
 
@@ -2236,9 +2320,9 @@ def apply_theme(app: QApplication, theme: str = "dark") -> None:
     app.setProperty("theme", normalized)
     accent = "sport" if app.property("optimization_mode") == "sport" else "comfort"
     if normalized == "light":
-        qss = LIGHT_QSS + LIGHT_PREMIUM_GLASS_QSS
+        qss = LIGHT_QSS + LIGHT_PREMIUM_GLASS_QSS + SMART_STOCK_LIGHT_QSS
     else:
-        qss = DARK_QSS + PREMIUM_GLASS_QSS + LIQUID_DARK_QSS
+        qss = DARK_QSS + PREMIUM_GLASS_QSS + LIQUID_DARK_QSS + SMART_STOCK_DARK_QSS
     if accent == "sport":
         qss += SPORT_ACCENT_QSS
     qss += STATUS_AND_INLINE_INPUT_QSS

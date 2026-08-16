@@ -12,7 +12,8 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import QRectF
+from PySide6.QtWidgets import QApplication, QGraphicsTextItem
 
 from core.models import (
     OptimizationResult,
@@ -92,6 +93,24 @@ def test_render_both_orientations_no_crash() -> None:
     print("[OK] strips render in horizontal / vertical / auto without crashing")
 
 
+def test_top_keeps_band_details_and_bottom_has_one_used_length_summary() -> None:
+    from ui.layout_view import LayoutView
+
+    view = LayoutView()
+    layout = _grid_layout()
+    sheet_rect = QRectF(100, 100, 1260, 630)
+    view._draw_segment_dimensioning(layout, sheet_rect, 0.42, False)
+    labels = [
+        item for item in view.scene.items()
+        if isinstance(item, QGraphicsTextItem)
+    ]
+    detail = [item for item in labels if item.toPlainText() == "9 × 40 mm"]
+    summary = [item for item in labels if item.toPlainText() == "Zużycie: 400 mm"]
+    assert len(detail) == 1 and detail[0].sceneBoundingRect().bottom() < sheet_rect.top()
+    assert len(summary) == 1 and summary[0].sceneBoundingRect().top() > sheet_rect.bottom()
+    print("[OK] detailed bands are above; one total used-length bracket is below")
+
+
 def test_identical_board_grouping() -> None:
     from algorithms.layout_grouping import group_identical_layouts
 
@@ -131,6 +150,7 @@ if __name__ == "__main__":
     test_horizontal_bands_rows()
     test_mixed_size_same_part_not_merged()
     test_render_both_orientations_no_crash()
+    test_top_keeps_band_details_and_bottom_has_one_used_length_summary()
     test_identical_board_grouping()
     test_cut_metrics_invariants()
     print("\ntest_cut_strips: OK")

@@ -94,3 +94,9 @@ def set_setting(key: str, value: Any) -> None:
             "INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)",
             (key, json.dumps(value)),
         )
+
+
+def delete_setting(key: str) -> None:
+    """Remove a setting that must not remain in the local JSON-backed DB."""
+    with get_connection() as connection:
+        connection.execute("DELETE FROM settings WHERE key=?", (key,))

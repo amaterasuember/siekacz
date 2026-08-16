@@ -44,8 +44,11 @@ echo Buduje wersje przenosna z obfuskacja...
     --add-data "assets;assets" ^
     --add-data "database\schema.sql;database" ^
     --add-data "sample_data;sample_data" ^
+    --add-data "LICENSE;." ^
     --collect-all ezdxf ^
     --hidden-import app.technical_editor ^
+    --hidden-import app.cad_viewer ^
+    --hidden-import cad.inspection ^
     --hidden-import import_export.dxf_io ^
     --add-data ".pyarmor_build\!PYARMOR_RT!;!PYARMOR_RT!" ^
     --paths ".pyarmor_build" ^
@@ -67,8 +70,11 @@ echo Buduje wersje przenosna bez obfuskacji...
     --add-data "assets;assets" ^
     --add-data "database\schema.sql;database" ^
     --add-data "sample_data;sample_data" ^
+    --add-data "LICENSE;." ^
     --collect-all ezdxf ^
     --hidden-import app.technical_editor ^
+    --hidden-import app.cad_viewer ^
+    --hidden-import cad.inspection ^
     --hidden-import import_export.dxf_io ^
     --distpath "dist\portable" ^
     --workpath "build" ^

@@ -51,3 +51,8 @@ def test_comfort_and_sport_are_separate_feasible_modes() -> None:
     assert all(layout.cut_tree for layout in comfort.sheet_layouts)
     assert all(layout.cut_tree for layout in sport.sheet_layouts)
     assert len(sport.sheet_layouts) <= len(comfort.sheet_layouts)
+
+
+if __name__ == "__main__":
+    test_comfort_and_sport_are_separate_feasible_modes()
+    print("test_comfort_sport_modes: OK")

@@ -132,6 +132,33 @@ def test_pricing_math_and_totals() -> None:
     print(f"[OK] pricing: reusable remnants excluded, total {p.total:.2f} zl, per-format spojne")
 
 
+def test_catalog_board_rate_overrides_an_old_material_thickness_rate() -> None:
+    """The PA6G 25 mm regression: XLSX price beats a stale 1223 zł/m² setting."""
+    material = "PA6G PŁYTA CZARNA"
+    # 1000×2000 board at 977 zł/m² => complete board value 1954 zł.
+    stock = SheetStock(material, 25, 1000, 2000, 1, price=1954.0)
+    part = SheetPart("A", 300, 200, 1, material, 25)
+    result = OptimizationResult(
+        job_type="sheet",
+        algorithm="test",
+        sheet_layouts=[SheetLayout(stock=stock, sheet_index=1, parts=[PlacedSheetPart(part, 0, 0, 300, 200)])],
+    )
+    summary = compute_cut_summary(result)
+    assert abs(summary.formats[0].catalog_price_m2 - 977.0) < _TOL
+
+    stale_rate = PricingRates(per_m2={f"{material}|25": 1223.0})
+    pricing = compute_pricing(summary, stale_rate)
+    assert abs(pricing.material_cost - summary.formats[0].gross_m2 * 977.0) < _TOL
+
+    from app.simple_window import CutInfoDialog
+    dialog = CutInfoDialog(None, result)
+    rate_control = dialog._rate_m2_dict[f"{material}|25"]
+    assert abs(rate_control.value() - 977.0) < _TOL
+    assert rate_control.isReadOnly()
+    dialog.close()
+    print("[OK] exact catalog board rate overrides stale material/thickness rate")
+
+
 def test_zero_rates_is_zero() -> None:
     s = compute_cut_summary(_result_two_formats())
     p = compute_pricing(s, PricingRates())
@@ -186,6 +213,7 @@ if __name__ == "__main__":
     test_per_format_time_positive()
     test_saw_feed_changes_time_and_labor_cost()
     test_pricing_math_and_totals()
+    test_catalog_board_rate_overrides_an_old_material_thickness_rate()
     test_zero_rates_is_zero()
     test_identical_layouts_in_a_stack_reduce_machine_time_not_piece_count()
     test_cut_info_dialog_renders()

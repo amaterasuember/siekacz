@@ -30,8 +30,10 @@ _PROTECTED: list[str] = [
     "main.py",
     "app/integrity.py",
     "app/expiry.py",
+    "app/license_acceptance.py",
     "app/license_text.py",
     "app/version.py",
+    "LICENSE",
 ]
 
 

@@ -18,7 +18,10 @@ def _expand_stock(stock: list[SheetStock]) -> list[SheetStock]:
     for item in stock:
         for _ in range(item.quantity):
             expanded.append(replace(item, quantity=1))
-    return sorted(expanded, key=lambda s: (s.material, s.thickness, s.width * s.height))
+    return sorted(
+        expanded,
+        key=lambda s: (-int(getattr(s, "priority", 0) or 0), s.material, s.thickness, s.width * s.height),
+    )
 
 
 def _orientations(part: SheetPart, stock: SheetStock) -> list[tuple[float, float, bool]]:

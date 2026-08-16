@@ -53,6 +53,7 @@ def validatePlate(data: Any, row: int = 1) -> tuple[SheetStock | None, list[str]
     height = safeNumber(_field(data, "height"))
     quantity = _safe_int(_field(data, "quantity"))
     stack_size = _safe_int(_field(data, "stack_size", 1))
+    priority = _safe_int(_field(data, "priority", 0))
     if width is None or height is None or quantity is None:
         errors.append(f"Popraw płytę w wierszu {row}. Wpisz szerokość, wysokość i całkowitą ilość.")
     elif width <= 0 or height <= 0 or quantity <= 0:
@@ -79,6 +80,12 @@ def validatePlate(data: Any, row: int = 1) -> tuple[SheetStock | None, list[str]
             nominal_height=safeNumber(_field(data, "nominal_height", height), height) or height,
             sheet_allowance=max(0.0, safeNumber(_field(data, "sheet_allowance", 0), 0) or 0),
             stack_size=stack_size,
+            priority=max(0, priority or 0),
+            preferred_cut_axis=(
+                _clean_text(_field(data, "preferred_cut_axis", "auto")).lower()
+                if _clean_text(_field(data, "preferred_cut_axis", "auto")).lower() in {"x", "y"}
+                else "auto"
+            ),
         ),
         [],
     )
@@ -115,7 +122,7 @@ def validatePart(data: Any, row: int = 1) -> tuple[SheetPart | None, list[str]]:
     )
 
 
-def validateProjectInput(project: Project, max_total_parts: int = 5000) -> list[str]:
+def validateProjectInput(project: Project, max_total_parts: int | None = 15_000) -> list[str]:
     errors: list[str] = []
     settings = project.settings if isinstance(project.settings, OptimizationSettings) else OptimizationSettings()
     kerf = safeNumber(settings.kerf)
@@ -134,14 +141,14 @@ def validateProjectInput(project: Project, max_total_parts: int = 5000) -> list[
             _part, row_errors = validatePart(part, index)
             errors.extend(row_errors)
             total_quantity += max(0, _safe_int(_field(part, "quantity", 0)) or 0)
-        if total_quantity > max_total_parts:
+        if max_total_parts is not None and total_quantity > max_total_parts:
             errors.append(
                 f"Za dużo formatek naraz ({total_quantity}). Podziel zlecenie albo zmniejsz ilość do {max_total_parts} szt."
             )
     return errors
 
 
-def sanitizeProjectState(data: Any, max_total_parts: int = 5000) -> Project:
+def sanitizeProjectState(data: Any, max_total_parts: int | None = 15_000) -> Project:
     if isinstance(data, Project):
         project = data
     elif isinstance(data, dict):
@@ -163,7 +170,7 @@ def sanitizeProjectState(data: Any, max_total_parts: int = 5000) -> Project:
         part, _errors = validatePart(item, index)
         if not part:
             continue
-        if total + part.quantity > max_total_parts:
+        if max_total_parts is not None and total + part.quantity > max_total_parts:
             break
         total += part.quantity
         safe_parts.append(part)
@@ -175,7 +182,7 @@ def sanitizeProjectState(data: Any, max_total_parts: int = 5000) -> Project:
     return project
 
 
-def getValidationErrors(project: Project, max_total_parts: int = 5000) -> list[str]:
+def getValidationErrors(project: Project, max_total_parts: int | None = 15_000) -> list[str]:
     return validateProjectInput(project, max_total_parts=max_total_parts)
 
 

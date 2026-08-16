@@ -16,7 +16,14 @@ from PySide6.QtCore import QMimeData, QPoint, Qt, QUrl
 from PySide6.QtGui import QDropEvent
 from PySide6.QtWidgets import QApplication
 
-from app.simple_window import PartsTableWidget, SimpleCutWindow, parse_parts_file
+from app.simple_window import (
+    PART_HEIGHT_COLUMN,
+    PART_QUANTITY_COLUMN,
+    PART_WIDTH_COLUMN,
+    PartsTableWidget,
+    SimpleCutWindow,
+    parse_parts_file,
+)
 
 
 def _app() -> QApplication:
@@ -27,7 +34,7 @@ def _snapshot(window: SimpleCutWindow) -> list[tuple[str, str, str]]:
     rows: list[tuple[str, str, str]] = []
     for r in range(window.parts.rowCount()):
         cells: list[str] = []
-        for c in (2, 3, 4):
+        for c in (PART_HEIGHT_COLUMN, PART_WIDTH_COLUMN, PART_QUANTITY_COLUMN):
             item = window.parts.item(r, c)
             cells.append(item.text() if item else "")
         rows.append(tuple(cells))  # type: ignore[arg-type]
@@ -158,8 +165,8 @@ def test_drop_appends_rows_and_single_undo() -> None:
         rows = _snapshot(window)
         assert len(rows) == len(baseline) + 3, f"expected 3 added rows, got {rows}"
         assert rows[-3:] == [
-            ("300", "500", "2"),
-            ("200", "150", "4"),
+            ("500", "300", "2"),
+            ("150", "200", "4"),
             ("100", "100", "1"),
         ], rows[-3:]
         assert len(window._parts_undo_stack) == initial_undo_depth + 1, \

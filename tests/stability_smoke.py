@@ -143,7 +143,7 @@ def run_case(name: str, project: Project, expect_all_placed: bool = True) -> Opt
 
 def test_regression_cases() -> None:
     run_case("simple 500x500", make_project(2000, 1000, 1, 5, [(500, 500, 2)]))
-    too_large = run_case("too large part", make_project(1000, 1000, 1, 5, [(1200, 500, 1)]), expect_all_placed=False)
+    too_large = run_case("too large part", make_project(1000, 1000, 1, 5, [(4000, 4000, 1)]), expect_all_placed=False)
     assert too_large.unplaced_sheet_parts or not _placed_counts(too_large)
     run_case("many small parts", make_project(2000, 1000, 1, 5, [(100, 100, 100)]))
     run_case("extreme kerf", make_project(1000, 1000, 1, 100, [(200, 200, 5)]))
@@ -206,7 +206,14 @@ def _process_events(milliseconds: int) -> None:
     QTimer.singleShot(milliseconds, loop.quit)
     loop.exec()
 
-from app.simple_window import MAX_TOTAL_PARTS, SimpleCutWindow
+from app.simple_window import (
+    MAX_TOTAL_PARTS,
+    STOCK_HEIGHT_COLUMN,
+    STOCK_MATERIAL_COLUMN,
+    STOCK_QUANTITY_COLUMN,
+    STOCK_WIDTH_COLUMN,
+    SimpleCutWindow,
+)
 from core.models import OptimizationResult, OptimizationSettings, Project, SheetLayout, SheetPart, SheetStock
 from import_export.image_export import export_scene_png
 from ui.layout_view import LayoutView
@@ -331,7 +338,7 @@ def run_case(name: str, project: Project, expect_all_placed: bool = True) -> Opt
 
 def test_regression_cases() -> None:
     run_case("simple 500x500", make_project(2000, 1000, 1, 5, [(500, 500, 2)]))
-    too_large = run_case("too large part", make_project(1000, 1000, 1, 5, [(1200, 500, 1)]), expect_all_placed=False)
+    too_large = run_case("too large part", make_project(1000, 1000, 1, 5, [(4000, 4000, 1)]), expect_all_placed=False)
     assert too_large.unplaced_sheet_parts or not _placed_counts(too_large)
     run_case("many small parts", make_project(2000, 1000, 1, 5, [(100, 100, 100)]))
     run_case("extreme kerf", make_project(1000, 1000, 1, 100, [(200, 200, 5)]))
@@ -410,16 +417,15 @@ def test_ui_validation_loader_and_export() -> None:
     assert not window._is_calculating
     assert window.last_result is not None
     
-    assert window.stock_table.cellWidget(0, 1) is None
-    assert window.stock_table.cellWidget(0, 2) is None
-    assert window.stock_table.cellWidget(0, 3) is None
+    assert window.stock_table.cellWidget(0, STOCK_MATERIAL_COLUMN) is not None
     assert window.stock_table.editTriggers() != QTableWidget.EditTrigger.NoEditTriggers
-    for column in range(1, 4):
+    for column in (STOCK_HEIGHT_COLUMN, STOCK_WIDTH_COLUMN, STOCK_QUANTITY_COLUMN):
+        assert window.stock_table.cellWidget(0, column) is None
         item = window.stock_table.item(0, column)
         assert item is not None
         assert item.flags() & Qt.ItemFlag.ItemIsEditable
 
-    window.stock_table.item(0, 1).setText("")
+    window.stock_table.item(0, STOCK_HEIGHT_COLUMN).setText("")
     try:
         window._collect_stock()
     except ValueError as exc:
@@ -454,13 +460,18 @@ def test_ui_validation_loader_and_export() -> None:
 
     window.parts.setRowCount(0)
     window.add_part_row(["50", "50", MAX_TOTAL_PARTS + 1])
+    # Keep this smoke check non-interactive: the real UI asks for the PIN.
+    window._authorize_part_limit_override = lambda _total: False
     try:
         window._collect_parts()
     except ValueError as exc:
         message = str(exc).lower()
-        assert "5000" in message and "format" in message
+        assert "15 000" in message and "format" in message
     else:
         raise AssertionError("excessive quantity should be rejected")
+
+    window._part_limit_override_authorized = True
+    assert window._collect_parts()[0].quantity == MAX_TOTAL_PARTS + 1
 
     window.parts.setRowCount(0)
     for row_values in (["500", "500", 2], ["200", "300", 5]):

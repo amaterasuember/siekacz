@@ -95,6 +95,53 @@ def recommended_worker_count() -> int:
     return max(2, min(len(ALGORITHM_NAMES), cores))
 
 
+def _process_worker_split(total_units: int) -> tuple[int, int]:
+    cores = max(1, os.cpu_count() or 2)
+    # The vertical search owns a process pool itself.  Keep both pools within
+    # the logical-core budget; the former eight-core branch created 2
+    # comparison + 8 strategy workers, causing context switching and idle
+    # comparison processes to remain resident after their short work ended.
+    light_workers = 1 if cores > 1 and total_units else 0
+    strategy_workers = max(1, cores - light_workers)
+    return light_workers, strategy_workers
+
+
+def _run_vertical_with_strategy_pool(
+    stock: list[SheetStock],
+    parts: list[SheetPart],
+    rest: tuple,
+    strategy_workers: int,
+) -> OptimizationResult:
+    old_parallel = os.environ.get("SIEKACZ_PARALLEL_STRATEGIES")
+    old_workers = os.environ.get("SIEKACZ_STRATEGY_WORKERS")
+    old_disable = os.environ.get("SIEKACZ_DISABLE_VERTICAL_CANDIDATE_POOL")
+    old_ensemble = os.environ.pop("SIEKACZ_IN_ENSEMBLE", None)
+    if strategy_workers > 1:
+        os.environ["SIEKACZ_PARALLEL_STRATEGIES"] = "1"
+        os.environ.pop("SIEKACZ_DISABLE_VERTICAL_CANDIDATE_POOL", None)
+    else:
+        os.environ.pop("SIEKACZ_PARALLEL_STRATEGIES", None)
+        os.environ["SIEKACZ_DISABLE_VERTICAL_CANDIDATE_POOL"] = "1"
+    os.environ["SIEKACZ_STRATEGY_WORKERS"] = str(max(1, strategy_workers))
+    try:
+        return optimize_2d_vertical_segmented(stock, parts, *rest)
+    finally:
+        if old_parallel is None:
+            os.environ.pop("SIEKACZ_PARALLEL_STRATEGIES", None)
+        else:
+            os.environ["SIEKACZ_PARALLEL_STRATEGIES"] = old_parallel
+        if old_workers is None:
+            os.environ.pop("SIEKACZ_STRATEGY_WORKERS", None)
+        else:
+            os.environ["SIEKACZ_STRATEGY_WORKERS"] = old_workers
+        if old_disable is None:
+            os.environ.pop("SIEKACZ_DISABLE_VERTICAL_CANDIDATE_POOL", None)
+        else:
+            os.environ["SIEKACZ_DISABLE_VERTICAL_CANDIDATE_POOL"] = old_disable
+        if old_ensemble is not None:
+            os.environ["SIEKACZ_IN_ENSEMBLE"] = old_ensemble
+
+
 def _run_sequential(args_common, progress_callback: ProgressCallback | None = None) -> list[tuple[str, OptimizationResult]]:
     results: list[tuple[str, OptimizationResult]] = []
     stock, parts, rest = args_common
@@ -135,11 +182,28 @@ def _run_with_threads(args_common, progress_callback: ProgressCallback | None = 
 def _run_with_processes(args_common, progress_callback: ProgressCallback | None = None) -> list[tuple[str, OptimizationResult]]:
     results: list[tuple[str, OptimizationResult]] = []
     stock, parts, rest = args_common
-    with ProcessPoolExecutor(max_workers=recommended_worker_count()) as executor:
+    light_algorithms = tuple(name for name in ALGORITHM_NAMES if name != "Vertical Segmented Guillotine")
+    total_units = sum(max(0, int(part.quantity)) for part in parts)
+    light_workers, strategy_workers = _process_worker_split(total_units)
+    with ProcessPoolExecutor(max_workers=light_workers) as executor:
         futures = {
             executor.submit(run_named_algorithm, name, stock, parts, *rest): name
-            for name in ALGORITHM_NAMES
+            for name in light_algorithms
         }
+        _report_progress(
+            progress_callback,
+            5,
+            f"Produkcja: do {strategy_workers} procesów roboczych; porównanie: do {light_workers} procesów",
+        )
+        try:
+            vertical = _run_vertical_with_strategy_pool(
+                deepcopy(stock), deepcopy(parts), rest, strategy_workers
+            )
+            results.append(("Vertical Segmented Guillotine", vertical))
+        except Exception as exc:
+            _logger.warning("Parallel vertical segmented algorithm failed: %s", exc)
+        _report_progress(progress_callback, 67, "Zakończono główny algorytm produkcyjny")
+
         for completed, future in enumerate(as_completed(futures, timeout=ENSEMBLE_TIMEOUT_S + 15), start=1):
             name = futures[future]
             try:
@@ -148,7 +212,7 @@ def _run_with_processes(args_common, progress_callback: ProgressCallback | None 
                 _logger.warning("Process ensemble algorithm %s failed: %s", name, exc)
             _report_progress(
                 progress_callback,
-                5 + int(completed / len(futures) * 78),
+                67 + int(completed / max(1, len(futures)) * 16),
                 f"Zakonczono {name} ({completed}/{len(futures)})",
             )
     return results
@@ -227,7 +291,7 @@ def run_parallel_ensemble(
     winner.algorithm = f"{winner_name} (multi-core ensemble winner)"
     winner.messages.append(
         f"Ensemble {used}: {len(scored)}/{len(ALGORITHM_NAMES)} algorytmów na "
-        f"{recommended_worker_count()} rdzeniach w {elapsed:.2f}s — zwycięzca: {winner_name}."
+        f"{os.cpu_count() or 2} rdzeniach logicznych w {elapsed:.2f}s — zwycięzca: {winner_name}."
     )
     for line in diagnostics:
         winner.messages.append(f"  • {line}")

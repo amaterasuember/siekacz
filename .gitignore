@@ -12,6 +12,8 @@ env/
 # Build / dystrybucja (generowane przez BUILD_EXE.bat / installer)
 build/
 dist/
+artifacts/
+outputs/
 SIEKACZ9000/
 INSTALLER/
 *.spec.bak
@@ -36,3 +38,11 @@ _count_candidates.py
 _validate_missing_fill.py
 tools/debug/_count_candidates.py
 tools/debug/_validate_missing_fill.py
+
+# Jednorazowe artefakty diagnostyczne i pomocnicze poprawki lokalne
+*.inspect.ndjson
+all_edits.json
+recovered_edits.json
+test_out*.txt
+fix_*.py
+old_*.py

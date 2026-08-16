@@ -1,7 +1,9 @@
 {
   "main.py": "2474968bae5d37d26983c2aaa52b2b803a87f82a7d3a2dca49fe90539a3e875e",
-  "app/integrity.py": "faf542386d0a99f92a223ca93037179a7ee70c5902dc2e370f7a709c7295583d",
-  "app/expiry.py": "5f82105eab9ac0f3513fc25650d01f79da56d526e36cb2994a7cfa44f5e5c781",
-  "app/license_text.py": "484ee6d20f5fe3f303d2d9e21319a21bde250b9658035a3af4b3c8664c7b9e2f",
-  "app/version.py": "ee93eb2fe634f2615c604b28c50bb1a07c2b7b60150e0b1edc60b62b801ac4a7"
+  "app/integrity.py": "6f703c2c95a0fcaddbb049ac8c05936990e1884c2c3505dfe9e7d51dd5818aa7",
+  "app/expiry.py": "9d9515322dae1d6c7c73d6d439dc259132f46899b4b842980c2094f03237c670",
+  "app/license_acceptance.py": "501dd828bd5ac1f9abb8a2cdd3205dbee4b32c16cfb479359edf25b06fed67cb",
+  "app/license_text.py": "95704cce42c7c06ae1b000b74242d96add76e6186a1b693737a55d3b9f5cd50e",
+  "app/version.py": "b4d462c6d1da94762875c54e9ee06bb407b485e68feba38be4cb0079beaf9d3e",
+  "LICENSE": "50ac39ce8c631b7221adc04c861e9863dd2ee3e08c19ea9c3129fa52f915c4af"
 }

@@ -14,7 +14,17 @@ from PySide6.QtGui import QKeyEvent, QKeySequence
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QLineEdit, QTableWidget, QTableWidgetItem
 
-from app.simple_window import SimpleCutWindow
+from app.simple_window import (
+    PART_HEIGHT_COLUMN,
+    PART_QUANTITY_COLUMN,
+    PART_THICKNESS_COLUMN,
+    PART_WIDTH_COLUMN,
+    STOCK_HEIGHT_COLUMN,
+    STOCK_MATERIAL_COLUMN,
+    STOCK_QUANTITY_COLUMN,
+    STOCK_WIDTH_COLUMN,
+    SimpleCutWindow,
+)
 
 
 def _app() -> QApplication:
@@ -26,7 +36,7 @@ def _snapshot(window: SimpleCutWindow) -> list[tuple[str, str, str]]:
     rows: list[tuple[str, str, str]] = []
     for r in range(window.parts.rowCount()):
         cells: list[str] = []
-        for c in (2, 3, 4):
+        for c in (PART_HEIGHT_COLUMN, PART_WIDTH_COLUMN, PART_QUANTITY_COLUMN):
             item = window.parts.item(r, c)
             cells.append(item.text() if item else "")
         rows.append(tuple(cells))  # type: ignore[arg-type]
@@ -40,7 +50,7 @@ def test_undo_after_cell_edit() -> None:
     baseline = _snapshot(window)
     assert baseline == [("", "", "1")]
 
-    item = window.parts.item(0, 2)
+    item = window.parts.item(0, PART_HEIGHT_COLUMN)
     assert item is not None
     item.setText("500")  # fires itemChanged → records snapshot
     after_edit = _snapshot(window)
@@ -65,7 +75,7 @@ def test_undo_after_add_and_remove_row() -> None:
 
     window.add_part_row(["100", "200", 3])
     after_add = _snapshot(window)
-    assert after_add == [("", "", "1"), ("100", "200", "3")]
+    assert after_add == [("", "", "1"), ("200", "100", "3")]
 
     window._undo_parts()
     assert _snapshot(window) == baseline
@@ -170,7 +180,7 @@ def test_parts_tab_reaches_quantity_before_next_row() -> None:
 
     length_editor = QLineEdit()
     length_editor.setProperty("tableRow", 0)
-    length_editor.setProperty("tableColumn", 3)
+    length_editor.setProperty("tableColumn", PART_WIDTH_COLUMN)
     tab_on_length = QKeyEvent(
         QEvent.Type.KeyPress,
         Qt.Key.Key_Tab,
@@ -178,15 +188,15 @@ def test_parts_tab_reaches_quantity_before_next_row() -> None:
     )
     assert delegate.eventFilter(length_editor, tab_on_length)
     app.processEvents()
-    assert navigation == [(0, 3, False)]
+    assert navigation == [(0, PART_WIDTH_COLUMN, False)]
     before_rows = window.parts.rowCount()
-    window._handle_part_nav_key(0, 3, False)
-    assert window.parts.currentColumn() == 4, "Tab on Dł. (mm) must focus Ilość"
+    window._handle_part_nav_key(0, PART_WIDTH_COLUMN, False)
+    assert window.parts.currentColumn() == PART_QUANTITY_COLUMN, "Tab on Dł. (mm) must focus Ilość"
     assert window.parts.rowCount() == before_rows, "Tab on Dł. (mm) must not create a row"
 
     quantity_editor = QLineEdit()
     quantity_editor.setProperty("tableRow", 0)
-    quantity_editor.setProperty("tableColumn", 4)
+    quantity_editor.setProperty("tableColumn", PART_QUANTITY_COLUMN)
     tab_on_quantity = QKeyEvent(
         QEvent.Type.KeyPress,
         Qt.Key.Key_Tab,
@@ -194,10 +204,10 @@ def test_parts_tab_reaches_quantity_before_next_row() -> None:
     )
     assert delegate.eventFilter(quantity_editor, tab_on_quantity)
     app.processEvents()
-    assert navigation[-1] == (0, 4, False)
-    window._handle_part_nav_key(0, 4, False)
+    assert navigation[-1] == (0, PART_QUANTITY_COLUMN, False)
+    window._handle_part_nav_key(0, PART_QUANTITY_COLUMN, False)
     assert window.parts.rowCount() == before_rows + 1, "Tab on Ilość should create/focus the next part row"
-    assert window.parts.currentColumn() == 2, "new part row should start from Szer. (mm)"
+    assert window.parts.currentColumn() == PART_THICKNESS_COLUMN, "new part row should start from Grubość (mm)"
     print("[OK] parts Tab navigation reaches quantity before advancing")
 
 
@@ -207,14 +217,16 @@ def test_stock_table_uses_visible_cell_navigation() -> None:
     assert (
         window.stock_table.selectionBehavior() == QTableWidget.SelectionBehavior.SelectItems
     ), "stock table should select individual cells, not hover-like rows"
-    assert window._editable_stock_columns() == [1, 2, 3]
+    # Material is derived from the active part context and FORMAT is a picker,
+    # so Tab exposes only dimensions and quantity.
+    assert window._editable_stock_columns() == [STOCK_HEIGHT_COLUMN, STOCK_WIDTH_COLUMN, STOCK_QUANTITY_COLUMN]
 
     window._add_blank_stock_row_and_focus()
-    assert window.stock_table.currentColumn() == 1, "new stock row should start from visible Szer. (mm)"
+    assert window.stock_table.currentColumn() == STOCK_HEIGHT_COLUMN, "new stock row should start from visible Wysokość (mm)"
 
-    assert window.stock_table.cellWidget(window.stock_table.currentRow(), 1) is None
-    window._handle_stock_nav_key(window.stock_table.currentRow(), 1, False)
-    assert window.stock_table.currentColumn() == 2
+    assert window.stock_table.cellWidget(window.stock_table.currentRow(), STOCK_HEIGHT_COLUMN) is None
+    window._handle_stock_nav_key(window.stock_table.currentRow(), STOCK_HEIGHT_COLUMN, False)
+    assert window.stock_table.currentColumn() == STOCK_WIDTH_COLUMN
     print("[OK] stock table uses visible cell navigation")
 
 
@@ -224,11 +236,13 @@ def test_stock_table_has_no_permanent_hover_editors() -> None:
     window.show()
     app.processEvents()
 
-    for column in (1, 2, 3):
+    for column in (STOCK_HEIGHT_COLUMN, STOCK_WIDTH_COLUMN, STOCK_QUANTITY_COLUMN):
         assert window.stock_table.cellWidget(0, column) is None
         item = window.stock_table.item(0, column)
         assert item is not None
         assert item.flags() & Qt.ItemFlag.ItemIsEditable
+    # Board material is intentionally a derived, read-only badge.
+    assert window.stock_table.cellWidget(0, STOCK_MATERIAL_COLUMN) is not None
 
     before = window.stock_table.currentIndex()
     app.processEvents()
@@ -248,14 +262,14 @@ def test_stock_table_hover_does_not_start_editing() -> None:
     table.setCurrentCell(-1, -1)
     app.processEvents()
 
-    index = table.model().index(0, 1)
+    index = table.model().index(0, STOCK_HEIGHT_COLUMN)
     point = table.visualRect(index).center()
     QTest.mouseMove(table.viewport(), point)
     app.processEvents()
     app.processEvents()
 
-    assert table.cellWidget(0, 1) is None
-    assert table.currentRow() == -1 or table.currentColumn() != 1
+    assert table.cellWidget(0, STOCK_HEIGHT_COLUMN) is None
+    assert table.currentRow() == -1 or table.currentColumn() != STOCK_HEIGHT_COLUMN
     assert not table.selectedIndexes()
     window.close()
     print("[OK] stock table hover does not start editing")

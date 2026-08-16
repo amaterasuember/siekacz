@@ -40,7 +40,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QGraphicsTextItem
 
 from app.simple_window import PdfPreviewDialog, SimpleCutWindow, _polish_sheet_count
 from core.models import (
@@ -85,6 +85,38 @@ def _missing_sheet_project() -> Project:
         min_reusable_offcut_size=80,
     )
     return project
+
+
+def test_material_badge_precedes_and_centers_with_sheet_title() -> None:
+    _app()
+    view = LayoutView()
+    stock = SheetStock("POM C PŁYTA NATURALNA", 10, 2000, 1000, 1)
+    part = SheetPart("A", 100, 100, 1, stock.material, 10)
+    layout = SheetLayout(stock=stock, sheet_index=1)
+    layout.parts.append(PlacedSheetPart(part=part, x=0, y=0, width=100, height=100))
+    result = OptimizationResult(
+        job_type="sheet",
+        algorithm="test",
+        sheet_layouts=[layout],
+    )
+    try:
+        view.show_result(result)
+        text_items = [
+            item for item in view.scene.items()
+            if isinstance(item, QGraphicsTextItem)
+        ]
+        badge = next(item for item in text_items if item.toPlainText() == "POM-C")
+        title = next(
+            item for item in text_items
+            if item.toPlainText().startswith("POM C PŁYTA NATURALNA")
+        )
+        badge_rect = badge.sceneBoundingRect()
+        title_rect = title.sceneBoundingRect()
+        assert badge_rect.right() < title_rect.left()
+        assert abs(badge_rect.center().y() - title_rect.center().y()) <= 1.5
+        print("[OK] material badge is before and vertically centred with sheet title")
+    finally:
+        view.deleteLater()
 
 
 def test_rebuild_sheet_nav_survives_repeated_rebuilds() -> None:
@@ -346,6 +378,7 @@ def test_vertical_bands_same_formatka_is_one_block() -> None:
 
 
 if __name__ == "__main__":
+    test_material_badge_precedes_and_centers_with_sheet_title()
     test_rebuild_sheet_nav_survives_repeated_rebuilds()
     test_apply_result_with_missing_sheets_does_not_crash()
     test_missing_sheets_follow_the_matching_material_and_thickness_group()

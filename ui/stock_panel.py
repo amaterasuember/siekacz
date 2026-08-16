@@ -178,12 +178,13 @@ class StockPanel(QWidget):
         "allow_rotation",
         "min_offcut_width",
         "min_offcut_height",
+        "priority",
     ]
     linear_headers = ["material", "profile", "length", "quantity", "price", "kerf", "min_offcut_length"]
 
     def __init__(self) -> None:
         super().__init__()
-        self.sheet_table = EditableTable(self.sheet_headers, ["POM-C", 10, 2000, 1000, 1, 0, "none", True, 120, 120])
+        self.sheet_table = EditableTable(self.sheet_headers, ["POM-C", 10, 2000, 1000, 1, 0, "none", True, 120, 120, 0])
         self.linear_table = EditableTable(self.linear_headers, ["POM-C", "Rod", 1000, 1, 0, 3, 80])
         self.sheet_table.changed.connect(self.changed.emit)
         self.linear_table.changed.connect(self.changed.emit)
@@ -231,6 +232,7 @@ class StockPanel(QWidget):
                     allow_rotation=_bool(row["allow_rotation"]),
                     min_offcut_width=_float(row["min_offcut_width"]),
                     min_offcut_height=_float(row["min_offcut_height"]),
+                    priority=max(0, _int(row["priority"])),
                 )
             )
         self.sheet_table.highlight_invalid({"thickness", "width", "height"}, {"quantity"})

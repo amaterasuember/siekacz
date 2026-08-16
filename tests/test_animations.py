@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -14,10 +15,21 @@ from PySide6.QtGui import QEnterEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QPushButton, QWidget
 
-from app.simple_window import AlgorithmSettingsDialog, HoverLiftFilter, SimpleCutWindow, ThemeToggleSwitch
+from app.simple_window import (
+    AlgorithmSettingsDialog,
+    HoverLiftFilter,
+    PART_THICKNESS_COLUMN,
+    STOCK_THICKNESS_COLUMN,
+    SimpleCutWindow,
+    ThemeToggleSwitch,
+)
 from app.material_catalog import MaterialCatalogEntry
 from core.models import OptimizationSettings, Project
-from ui.optimization_progress import OptimizationProgressOverlay, _SAMURAI_FRAMES, _SIMS_MESSAGES
+from ui.optimization_progress import (
+    OptimizationProgressOverlay,
+    _SAMURAI_FRAMES,
+    _SIMS_MESSAGES,
+)
 
 
 def _app() -> QApplication:
@@ -163,9 +175,9 @@ def test_select_page_fades_in_new_widget() -> None:
     print("[OK] _select_page fade-in invocation safe")
 
 
-def test_progress_has_one_hundred_unique_world_facts_and_ascii_samurai_frames() -> None:
-    assert len(_SIMS_MESSAGES) == 100
-    assert len(set(_SIMS_MESSAGES)) == 100
+def test_progress_has_two_hundred_unique_transport_history_facts_and_ascii_samurai_frames() -> None:
+    assert len(_SIMS_MESSAGES) == 200
+    assert len(set(_SIMS_MESSAGES)) == 200
     assert len(_SAMURAI_FRAMES) == 8
     assert all(
         phase.startswith(f"{index:02d}  ")
@@ -173,7 +185,7 @@ def test_progress_has_one_hundred_unique_world_facts_and_ascii_samurai_frames() 
         and all(ord(char) < 128 for char in art)
         for index, (phase, art) in enumerate(_SAMURAI_FRAMES, 1)
     )
-    print("[OK] progress deck has 100 unique world facts and ASCII samurai frames")
+    print("[OK] progress deck has 200 unique transport/history facts and ASCII samurai frames")
 
 
 def test_progress_facts_do_not_repeat_before_the_full_deck_is_shown() -> None:
@@ -240,6 +252,9 @@ def test_algorithm_settings_uses_left_navigation_and_persists_new_controls() -> 
     assert [button.text() for button in dialog._settings_nav_buttons] == [
         "Rozkrój", "Technologia", "Wydajność", "Wygląd", "Cennik", "Silnik",
     ]
+    assert dialog._tutorial_button.text() == "Samouczek"
+    assert dialog._tutorial_button.objectName() == "settingsNavTab"
+    assert "background" not in dialog._tutorial_button.styleSheet()
     dialog._set_settings_page(3)
     assert dialog._settings_pages.currentIndex() == 3
     assert dialog._animation_economy.isChecked()
@@ -249,6 +264,30 @@ def test_algorithm_settings_uses_left_navigation_and_persists_new_controls() -> 
     assert result["saw_feed_m_per_min"] == 21.0
     assert result["animation_mode"] == "economy"
     print("[OK] settings dialog has navigation, feed and animation controls")
+
+
+def test_settings_can_request_tutorial_replay() -> None:
+    _app()
+    dialog = AlgorithmSettingsDialog(None, {})
+    assert not dialog.tutorial_requested
+    dialog._tutorial_button.click()
+    assert dialog.tutorial_requested
+    assert dialog.result() == dialog.DialogCode.Rejected
+    print("[OK] settings expose a neutral tutorial replay action")
+
+
+def test_preview_zoom_controls_do_not_duplicate_fit_action() -> None:
+    _app()
+    window = SimpleCutWindow()
+    try:
+        controls = window._zoom_widget
+        button_labels = [button.text() for button in controls.findChildren(QPushButton)]
+        assert "Fit" not in button_labels
+        assert window._zoom_percent_label.toolTip().casefold().find("zresetować") >= 0
+        assert controls.height() == 3 * 44 + 24 + 3 * 5 + 16
+    finally:
+        window.close()
+    print("[OK] zoom toolbar uses 100% as the only fit/reset action")
 
 
 def test_main_window_keeps_catalog_import_in_settings_and_uses_full_width_thickness() -> None:
@@ -279,21 +318,21 @@ def test_catalog_thickness_only_updates_the_last_stock_row() -> None:
     window._populate_material_selector()
     window.material_selector.setCurrentIndex(0)
     window.catalog_thickness_selector.setCurrentIndex(1)
-    assert window.stock_table.item(0, 0).text() == "8"
-    assert window.stock_table.item(1, 0).text() == "8"
-    assert window.stock_table.item(2, 0).text() == "18"
+    assert window.stock_table.item(0, STOCK_THICKNESS_COLUMN).text() == "8"
+    assert window.stock_table.item(1, STOCK_THICKNESS_COLUMN).text() == "8"
+    assert window.stock_table.item(2, STOCK_THICKNESS_COLUMN).text() == "18"
 
     window.parts.setRowCount(0)
     window.add_part_row([8, 100, 120, 1])
     window.add_part_row()
     window.catalog_thickness_selector.setCurrentIndex(0)
-    assert window.parts.item(0, 1).text() == "8"
-    assert window.parts.item(1, 1).text() == "8"
+    assert window.parts.item(0, PART_THICKNESS_COLUMN).text() == "8"
+    assert window.parts.item(1, PART_THICKNESS_COLUMN).text() == "8"
     window.catalog_thickness_selector.setCurrentIndex(1)
-    assert window.parts.item(0, 1).text() == "8"
-    assert window.parts.item(1, 1).text() == "18"
+    assert window.parts.item(0, PART_THICKNESS_COLUMN).text() == "8"
+    assert window.parts.item(1, PART_THICKNESS_COLUMN).text() == "18"
 
-    assert window.parts.item(0, 1).flags() & Qt.ItemFlag.ItemIsEditable
+    assert window.parts.item(0, PART_THICKNESS_COLUMN).flags() & Qt.ItemFlag.ItemIsEditable
     window.close()
     print("[OK] catalog thickness only changes the last stock row")
 
@@ -309,12 +348,14 @@ if __name__ == "__main__":
     test_theme_toggle_switch_slides_and_emits()
     test_theme_toggle_is_not_exposed_in_main_window()
     test_select_page_fades_in_new_widget()
-    test_progress_has_one_hundred_unique_world_facts_and_ascii_samurai_frames()
+    test_progress_has_two_hundred_unique_transport_history_facts_and_ascii_samurai_frames()
     test_progress_facts_do_not_repeat_before_the_full_deck_is_shown()
     test_calculation_render_loops_and_stops()
     test_economy_calculation_animation_skips_video_render()
     test_progress_overlay_keeps_the_real_optimizer_status_separate_from_the_fact()
     test_algorithm_settings_uses_left_navigation_and_persists_new_controls()
+    test_settings_can_request_tutorial_replay()
+    test_preview_zoom_controls_do_not_duplicate_fit_action()
     test_main_window_keeps_catalog_import_in_settings_and_uses_full_width_thickness()
     test_catalog_thickness_only_updates_the_last_stock_row()
     print("\ntest_animations: OK")

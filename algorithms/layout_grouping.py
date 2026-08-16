@@ -22,6 +22,28 @@ class LayoutGroup:
     display_sheet_indices: list[int]  # numbering within material/thickness group
 
 
+def format_sheet_number_ranges(numbers: list[int] | tuple[int, ...]) -> str:
+    """Return compact, human-readable sheet numbers (``1–3, 5, 7–9``).
+
+    A grouped layout can represent dozens of identical boards.  Listing every
+    number made the preview header, navigator and PDF unreadable, while this
+    keeps the complete numbering unambiguous.
+    """
+    values = sorted({int(value) for value in numbers})
+    if not values:
+        return ""
+    ranges: list[str] = []
+    start = previous = values[0]
+    for value in values[1:]:
+        if value == previous + 1:
+            previous = value
+            continue
+        ranges.append(str(start) if start == previous else f"{start}–{previous}")
+        start = previous = value
+    ranges.append(str(start) if start == previous else f"{start}–{previous}")
+    return ", ".join(ranges)
+
+
 def layout_signature(layout: SheetLayout) -> tuple:
     """Order-independent fingerprint of how a board is cut.
 

@@ -77,6 +77,8 @@ powershell -NoProfile -Command "$installer=Get-Item 'dist\installer\SIEKACZ9000_
 if errorlevel 1 goto :failed
 copy /y "dist\installer\SIEKACZ9000_Setup.exe" "dist\installer\SIEKACZ9000_Setup_v%APP_VERSION%.exe" >nul
 if errorlevel 1 goto :failed
+copy /y "dist\installer\SIEKACZ9000_Setup.exe" "dist\installer\SIEKACZ9000_Setup_v%APP_VERSION%_windows-x64.exe" >nul
+if errorlevel 1 goto :failed
 
 if exist "build" rmdir /s /q "build"
 if exist "SIEKACZ9000.spec" del /q "SIEKACZ9000.spec"
@@ -85,6 +87,7 @@ echo.
 echo Gotowe. Instalator znajduje sie tutaj:
 echo %ROOT_DIR%\dist\installer\SIEKACZ9000_Setup.exe
 echo %ROOT_DIR%\dist\installer\SIEKACZ9000_Setup_v%APP_VERSION%.exe
+echo %ROOT_DIR%\dist\installer\SIEKACZ9000_Setup_v%APP_VERSION%_windows-x64.exe
 if not "%SIEKACZ_NO_PAUSE%"=="1" pause
 exit /b 0
 

@@ -673,6 +673,29 @@ def test_worker_keeps_repeated_parts_uniform_grid_after_kerf_tolerance() -> None
         assert round(layout.used_height) == 1497
 
 
+def test_repeated_mixed_grid_fills_the_last_legal_side_strip() -> None:
+    """A 3000x1500 sheet fits 16, not 15, pieces of 400x600 mm.
+
+    Six vertical pieces on top, eight horizontal pieces below and two vertical
+    pieces in the right strip is a legal two-strip guillotine layout.  This
+    guards the candidate topology that was previously missed in the preview.
+    """
+    stock = [SheetStock("PVC", 20, 3000, 1500, 1, allow_rotation=True)]
+    parts = [SheetPart("D", 400, 600, 16, "PVC", 20, allow_rotation=True)]
+
+    result = optimize_2d_vertical_segmented(
+        stock, parts, kerf=5.2, margin=0, min_reusable_size=80, optimization_mode="comfort",
+    )
+
+    assert not result.unplaced_sheet_parts
+    assert len(result.sheet_layouts) == 1
+    layout = result.sheet_layouts[0]
+    assert len(layout.parts) == 16
+    assert layout.is_guillotine_feasible
+    assert sum(1 for placed in layout.parts if placed.rotated) == 8
+    assert any(placed.x > 2400 and placed.height == 600 for placed in layout.parts)
+
+
 def main() -> None:
     test_long_parts_use_rotated_residual_strip()
     test_right_residual_strip_reserves_the_kerf_before_a_rotated_part()
@@ -690,6 +713,7 @@ def main() -> None:
     test_single_part_single_stock()
     test_repeated_parts_prefer_uniform_grid_when_material_ties()
     test_worker_keeps_repeated_parts_uniform_grid_after_kerf_tolerance()
+    test_repeated_mixed_grid_fills_the_last_legal_side_strip()
     print("waste recovery optimizer tests: OK")
 
 

@@ -43,6 +43,11 @@ class SheetStock:
     nominal_height: float = 0.0
     sheet_allowance: float = 0.0
     stack_size: int = 1
+    priority: int = 0
+    # Physical board side along which the first long rip cuts should run.
+    # ``x`` refers to ``width``, ``y`` to ``height`` and ``auto`` preserves
+    # the optimizer's production defaults.
+    preferred_cut_axis: str = "auto"
 
 
 def materials_are_compatible(stock_material: str, part_material: str) -> bool:
@@ -221,7 +226,12 @@ class OptimizationSettings:
     allow_mixed_materials: bool = False
     multi_core: bool = True
     saw_feed_m_per_min: float = 12.0
+    # economy | quality
     animation_mode: str = "economy"
+    # When enabled, ``sheet_stock`` contains one supplier-format candidate per
+    # material/thickness/size.  The worker chooses how many of each format are
+    # needed instead of treating the entered quantity as a hard warehouse cap.
+    smart_stock_mode: bool = False
 
 
 @dataclass
