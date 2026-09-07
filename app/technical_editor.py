@@ -4,7 +4,7 @@ import math
 from dataclasses import replace
 from pathlib import Path
 
-from PySide6.QtCore import QLineF, QPoint, QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QLineF, QPoint, QPointF, QRect, QRectF, Qt, Signal
 from PySide6.QtGui import QAction, QBrush, QColor, QKeySequence, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QApplication,
@@ -107,7 +107,7 @@ from cad.model import (
     regular_polygon,
     slot_from_three_points,
 )
-from cad.patterns import SketchPattern, create_linear_circle_pattern
+from cad.patterns import create_linear_circle_pattern
 from cad.parameter_data import CadParameter
 from cad.parameter_data import validate_parameter_name
 from cad.parameter_engine import bind_constraint_expression, bind_expression, make_parameter
@@ -163,16 +163,23 @@ class LayerManagerDialog(QDialog):
     def values(self) -> dict[str, CadLayer]:
         result: dict[str, CadLayer] = {}
         for row in range(self.table.rowCount()):
-            original = self._layers[self.table.item(row, 1).text()]
-            rgb_text = self.table.item(row, 3).text().strip().lstrip("#")
+            cells = [self.table.item(row, col) for col in range(6)]
+            if any(cell is None for cell in cells):
+                raise ValueError("Niekompletny wiersz warstwy CAD.")
+            name, color, rgb, linetype = (self.table.item(row, col) for col in (1, 2, 3, 4))
+            visible, locked = self.table.item(row, 0), self.table.item(row, 5)
+            assert name is not None and color is not None and rgb is not None and linetype is not None
+            assert visible is not None and locked is not None
+            original = self._layers[name.text()]
+            rgb_text = rgb.text().strip().lstrip("#")
             true_color = int(rgb_text, 16) if rgb_text else None
             layer = CadLayer(
                 original.name,
-                int(self.table.item(row, 2).text()),
+                int(color.text()),
                 true_color,
-                self.table.item(row, 4).text(),
-                self.table.item(row, 0).checkState() == Qt.CheckState.Checked,
-                self.table.item(row, 5).checkState() == Qt.CheckState.Checked,
+                linetype.text(),
+                visible.checkState() == Qt.CheckState.Checked,
+                locked.checkState() == Qt.CheckState.Checked,
             )
             result[layer.name] = layer
         return result
@@ -643,12 +650,14 @@ class EllipticalArcSpecificationDialog(EllipseSpecificationDialog):
         self.sweep_input.setDecimals(4)
         self.sweep_input.setSuffix("°")
         self.sweep_input.setValue(sweep_parameter_deg)
-        form = self.layout().itemAt(0).layout()
+        container_layout = self.layout()
+        first_item = container_layout.itemAt(0) if container_layout is not None else None
+        form = first_item.layout() if first_item is not None else None
         if isinstance(form, QFormLayout):
             form.addRow("Parametr początkowy", self.start_input)
             form.addRow("Rozwarcie parametryczne", self.sweep_input)
 
-    def values(self) -> tuple[Point2D, float, float, float, float, float]:
+    def arc_values(self) -> tuple[Point2D, float, float, float, float, float]:
         center = Point2D(self.x_input.value(self.parameters), self.y_input.value(self.parameters))
         major, minor, rotation = self.major_input.value(self.parameters), self.minor_input.value(self.parameters), self.rotation_input.value()
         start, sweep = self.start_input.value(), self.sweep_input.value()
@@ -1849,7 +1858,7 @@ class TechnicalCanvas(QGraphicsView):
         self.scale(factor, factor)
         event.accept()
 
-    def drawBackground(self, painter: QPainter, rect: QRectF) -> None:
+    def drawBackground(self, painter: QPainter, rect: QRectF | QRect) -> None:
         super().drawBackground(painter, rect)
         spacing = max(1.0, self.grid_size)
         pixel_spacing = abs(self.transform().m11()) * spacing
@@ -2279,9 +2288,9 @@ class TechnicalEditorDialog(QDialog):
                     return
                 center, major, minor, rotation = dialog.values()
                 entity = EllipseEntity(center, major, minor, rotation)
-                normalized_candidates = tuple(
-                    candidate if isinstance(candidate, SnapCandidate) else None for candidate in candidates[:3]
-                )
+                normalized = [candidate if isinstance(candidate, SnapCandidate) else None for candidate in candidates[:3]]
+                normalized.extend([None] * (3 - len(normalized)))
+                normalized_candidates = (normalized[0], normalized[1], normalized[2])
                 proposal = build_ellipse_auto_constraints(entity, normalized_candidates) if self.canvas.auto_constraints_enabled else None
             elif tool == "ellipse_arc" and len(raw_points) == 5:
                 preview = elliptical_arc_from_five_points(*raw_points)
@@ -2297,7 +2306,7 @@ class TechnicalEditorDialog(QDialog):
                 )
                 if dialog.exec() != QDialog.DialogCode.Accepted:
                     return
-                center, major, minor, rotation, start_parameter, sweep = dialog.values()
+                center, major, minor, rotation, start_parameter, sweep = dialog.arc_values()
                 entity = EllipticalArcEntity(center, major, minor, rotation, start_parameter, sweep)
                 normalized_candidates = tuple(
                     candidate if isinstance(candidate, SnapCandidate) else None for candidate in candidates
@@ -2494,7 +2503,7 @@ class TechnicalEditorDialog(QDialog):
                 )
                 if dialog.exec() != QDialog.DialogCode.Accepted:
                     return
-                center, major, minor, rotation, start_parameter, sweep = dialog.values()
+                center, major, minor, rotation, start_parameter, sweep = dialog.arc_values()
                 replacement = EllipticalArcEntity(center, major, minor, rotation, start_parameter, sweep, id=entity.id)
             elif isinstance(entity, PolylineEntity):
                 dialog = PolylineSpecificationDialog(
@@ -3130,7 +3139,8 @@ class TechnicalEditorDialog(QDialog):
             self._edit_entity(value)
 
     def _refresh_side_panels(self) -> None:
-        expanded = self.model_tree.topLevelItem(0).isExpanded() if self.model_tree.topLevelItemCount() else True
+        top_item = self.model_tree.topLevelItem(0)
+        expanded = top_item.isExpanded() if top_item is not None else True
         sketch = self.document.active_sketch
         self.model_tree.blockSignals(True)
         self.model_tree.clear()

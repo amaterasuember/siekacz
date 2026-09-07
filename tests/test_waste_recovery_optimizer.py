@@ -280,6 +280,50 @@ def test_kerf_aware_orientation_split_candidates_minimize_saved_length() -> None
     assert "900x40=" in debug_text
 
 
+def test_mixed_narrow_parts_prefer_a_long_rip_and_crosscut_plan() -> None:
+    """Mixed narrow parts should become vertical rip strips, not shelves.
+
+    This is a general mixed-width production profile: several long narrow
+    parts can share a 2 m rip with shorter parts below them, even though their
+    widths are not identical.  Exact-width strip grouping used to miss this
+    and selected a nearly full-width collection of horizontal rows instead.
+    """
+    stock = [SheetStock("standard", 1, 2000, 1000, 1, allow_rotation=True, min_offcut_width=80, min_offcut_height=80)]
+    dimensions = [
+        (100, 920), (80, 1400), (540, 90), (100, 1706), (540, 100), (100, 545),
+        (71, 1125), (50, 1706), (105, 940), (69, 1350), (69, 1350), (90, 770),
+        (100, 770), (100, 540), (69, 1125), (50, 770), (540, 90), (90, 1706),
+    ]
+    parts = [
+        SheetPart(f"P{index + 1}", width, height, 1, "standard", 1, allow_rotation=True)
+        for index, (width, height) in enumerate(dimensions)
+    ]
+
+    result = optimize_2d_vertical_segmented(
+        stock,
+        parts,
+        kerf=3,
+        margin=0,
+        min_reusable_size=80,
+        optimization_mode="comfort",
+    )
+
+    assert not result.unplaced_sheet_parts
+    assert len(result.sheet_layouts) == 1
+    layout = result.sheet_layouts[0]
+    _assert_layout_clean(layout, 3)
+    assert len(layout.parts) == len(dimensions)
+    # The candidate rotates the physical panel and makes narrow longitudinal
+    # rips.  Its remaining end strip is therefore a useful rectangle instead
+    # of a few millimetres at the end of a 2000 mm shelf layout.
+    assert (layout.stock.width, layout.stock.height) == (1000, 2000)
+    assert layout.used_width <= 960
+    assert layout.used_height >= 1900
+    assert len(layout.vertical_segments) >= 8
+    for placement in layout.parts:
+        assert any(abs(placement.x - float(segment["x"])) <= EPS for segment in layout.vertical_segments)
+
+
 def test_waste_first_refill_moves_square_fillers_under_long_columns() -> None:
     stock = [SheetStock("standard", 1, 3000, 1500, 1, allow_rotation=True, min_offcut_width=80, min_offcut_height=80)]
     parts = [

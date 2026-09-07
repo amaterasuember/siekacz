@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import functools
 import math
 import os
 import random as _random
 from copy import deepcopy
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field, replace
 from itertools import permutations
 
@@ -18,6 +17,7 @@ from algorithms.part_classification import (
     strategic_dimension as _shared_strategic_dimension,
 )
 from algorithms.vertical_candidate_parallel import build_strategy_candidates_parallel
+from core.grain import part_orientations
 from core.models import OptimizationResult, PlacedSheetPart, SheetLayout, SheetPart, SheetStock, materials_are_compatible
 
 Rect = tuple[float, float, float, float]
@@ -260,7 +260,7 @@ def _canonicalize_stock_orientation(item: SheetStock) -> SheetStock:
     # the operator selects a board side, orient that physical side vertically
     # so the long rip cuts really run along it.  Swap the stored axis together
     # with the dimensions so it continues to identify the same physical side.
-    if preferred_axis in {"x", "y"} and item.grain_direction == "none":
+    if preferred_axis in {"x", "y"} and item.grain_direction in {"none", "x", "y"}:
         if preferred_axis == "y":
             return replace(item)
         return replace(
@@ -270,6 +270,7 @@ def _canonicalize_stock_orientation(item: SheetStock) -> SheetStock:
             nominal_width=item.nominal_height or item.height,
             nominal_height=item.nominal_width or item.width,
             preferred_cut_axis="y",
+            grain_direction=("y" if item.grain_direction == "x" else "x" if item.grain_direction == "y" else "none"),
         )
 
     if not item.allow_rotation or item.grain_direction != "none":
@@ -325,25 +326,8 @@ def _stock_orientation_sets(stock: list[SheetStock]) -> list[tuple[str, list[She
     return [("stock 0deg", canonical)]
 
 
-@functools.lru_cache(maxsize=2048)
-def _orientations_cached(
-    pw: float, ph: float, allow_rotation: bool, grain: str | None, stock_allow_rotation: bool
-) -> tuple[tuple[float, float, bool], ...]:
-    options: list[tuple[float, float, bool]] = [(pw, ph, False)]
-    if allow_rotation and stock_allow_rotation and grain == "none":
-        options.append((ph, pw, True))
-    unique: list[tuple[float, float, bool]] = []
-    seen: set[tuple[float, float]] = set()
-    for width, height, rotated in options:
-        key = (round(width, 4), round(height, 4))
-        if key not in seen:
-            seen.add(key)
-            unique.append((width, height, rotated))
-    return tuple(unique)
-
-
 def _orientations(part: SheetPart, stock: SheetStock) -> tuple[tuple[float, float, bool], ...]:
-    return _orientations_cached(part.width, part.height, part.allow_rotation, part.grain_direction, stock.allow_rotation)
+    return part_orientations(part, stock)
 
 
 def _part_variants(part: SheetPart, stock: SheetStock) -> list[_PartVariant]:
@@ -1071,7 +1055,7 @@ def _recover_internal_fillers(
             # Try fit_options in order, validate each placement against every
             # other placed part, undo and try the next option on collision.
             placement = None
-            region_class = source = segment = None
+            region_class = source = None
             before_length = _saved_used_length(layout)
             for option_class, option_source, option_segment in fit_options:
                 before_count = len(layout.parts)
@@ -1096,7 +1080,7 @@ def _recover_internal_fillers(
                         option_segment.parts.pop()
                     continue
                 placement = trial
-                region_class, source, segment = option_class, option_source, option_segment
+                region_class, source, _segment = option_class, option_source, option_segment
                 break
 
             if placement is None:
@@ -1778,7 +1762,9 @@ def _placed_part_count(result: OptimizationResult) -> int:
 
 
 def _total_saved_used_length(result: OptimizationResult) -> float:
-    return sum(_saved_used_length(layout) for layout in result.sheet_layouts)
+    # Equivalent rotated layouts may add their decimal spans in a different
+    # order. Sub-micron floating-point noise must not beat production criteria.
+    return round(math.fsum(_saved_used_length(layout) for layout in result.sheet_layouts), 6)
 
 
 def _count_unplaced_non_fillers(result: OptimizationResult) -> int:
@@ -1807,7 +1793,7 @@ def _count_unplaced_non_fillers(result: OptimizationResult) -> int:
 
 
 def _total_saved_consumed_area(result: OptimizationResult) -> float:
-    return sum(_saved_consumed_area(layout) for layout in result.sheet_layouts)
+    return round(math.fsum(_saved_consumed_area(layout) for layout in result.sheet_layouts), 6)
 
 
 def _long_axis_tiebreak(result: OptimizationResult) -> tuple[int, float, float]:
@@ -1958,12 +1944,12 @@ def _sport_score(result: OptimizationResult, kerf: float, min_reusable_size: flo
         _nf_unplaced * 100_000_000_000.0 + _filler_unplaced * 100_000_000.0,
         len(layouts) * 1_000_000.0,
         infeasible * 100_000_000.0,
-        _constraining_rotation_count(result) * 20_000_000.0,
         # Material saved along the long axis is a production priority.
         # Mixed orientations remain legal and are only a readability
         # tie-breaker once board count and consumed material are comparable.
         _total_saved_used_length(result) * 5_000_000.0,
         _total_saved_consumed_area(result) * 250.0,
+        _constraining_rotation_count(result) * 20_000_000.0,
         _mixed_orientation_penalty * 500_000_000.0,
         -placed_count * 250_000.0,
         -_residual_recovery_rotation_count(result) * 20_000_000.0,
@@ -1978,7 +1964,7 @@ def _sport_score(result: OptimizationResult, kerf: float, min_reusable_size: flo
 
 
 def _comfort_secondary_rotation_count(result: OptimizationResult) -> int:
-    group_area: Counter[str] = Counter()
+    group_area: dict[str, float] = defaultdict(float)
     for layout in result.sheet_layouts:
         for placement in layout.parts:
             group_area[placement.part.name] += placement.part.width * placement.part.height
@@ -2000,7 +1986,7 @@ def _constraining_rotation_count(result: OptimizationResult) -> int:
         strategic = max(_strategic_dimension(layout.stock), EPS)
         for placement in layout.parts:
             longest = max(placement.part.width, placement.part.height)
-            shortest = max(min(placement.part.width, placement.part.height), EPS)
+            max(min(placement.part.width, placement.part.height), EPS)
             if longest < strategic * 0.80:
                 continue
             key = (
@@ -2028,7 +2014,7 @@ def _residual_recovery_rotation_count(result: OptimizationResult) -> int:
             if not placement.rotated:
                 continue
             longest = max(placement.part.width, placement.part.height)
-            shortest = max(min(placement.part.width, placement.part.height), EPS)
+            max(min(placement.part.width, placement.part.height), EPS)
             if longest < strategic * 0.80:
                 continue
             key = (
@@ -2246,7 +2232,7 @@ def _order_variants_for_height_axis_cut(stacks: list[_StripStack], stock_height:
 
 
 def _ordered_stacks_for_manufacturing(stacks: list[_StripStack]) -> list[_StripStack]:
-    def stack_key(stack: _StripStack) -> tuple[float, int, tuple[tuple[float, float], ...]]:
+    def stack_key(stack: _StripStack) -> tuple[float, float, float, tuple[tuple[float, float], ...]]:
         signature = _stack_signature(stack)
         repeated = len(set(signature)) == 1
         if repeated:
@@ -2463,6 +2449,174 @@ def _build_vertical_strip_candidate_for_stock(
     )
     annotate_result_metrics(result, kerf, min_reusable_size)
     return result
+
+
+def _build_long_rip_strip_candidate_for_stock(
+    stock_items: list[SheetStock],
+    parts: list[SheetPart],
+    kerf: float,
+    margin: float,
+    orientation_name: str,
+    min_reusable_size: float,
+) -> OptimizationResult | None:
+    """Build a production plan from long rip strips with variable widths.
+
+    Unlike ``_build_vertical_strip_candidate_for_stock``, a strip does not
+    need a group of parts with exactly the same width.  Each strip is a
+    first-cut rip whose width is the widest part assigned to it; its parts are
+    then cross-cut one below another.  This is the common shop-floor pattern
+    for a mixed list of narrow, long parts and leaves one rectangular end
+    remnant instead of turning every long part into a horizontal shelf.
+
+    This is deliberately a candidate, rather than a global rule: the regular
+    candidate pool may still choose rows or mixed orientations when they save
+    more material.
+    """
+    available_stock = _expand_stock(stock_items)
+    if not available_stock:
+        return None
+
+    remaining = _expand_parts(parts)
+    layouts: list[SheetLayout] = []
+    messages: list[str] = []
+
+    while remaining and available_stock:
+        stock = available_stock.pop(0)
+        usable_width = stock.width - margin * 2
+        usable_height = stock.height - margin * 2
+        stacks: list[_StripStack] = []
+
+        # Orienting a part along its longest possible rip side first is what
+        # produces the readable "rips, then cross cuts" layout.  The exact
+        # order is deterministic and the normal candidate pool remains free
+        # to beat this candidate when a different orientation is better.
+        ordered = sorted(
+            remaining,
+            key=lambda part: (
+                -max((variant.height for variant in _part_variants(part, stock)), default=0.0),
+                -max((variant.width * variant.height for variant in _part_variants(part, stock)), default=0.0),
+                -max((variant.width for variant in _part_variants(part, stock)), default=0.0),
+                part.name,
+                part.label,
+            ),
+        )
+        placed_ids: set[int] = set()
+
+        for part in ordered:
+            variants = sorted(
+                (
+                    variant
+                    for variant in _part_variants(part, stock)
+                    if variant.width <= usable_width + EPS and variant.height <= usable_height + EPS
+                ),
+                key=lambda variant: (-variant.height, variant.width, variant.rotated),
+            )
+            if not variants:
+                continue
+
+            best: tuple[tuple[float, ...], _StripStack | None, _PartVariant] | None = None
+            total_width = _strip_total_width(stacks, kerf)
+            for variant in variants:
+                # Existing strips are preferred only when they do not make the
+                # total rip width worse than opening a fresh strip.  A narrow
+                # part may safely share a wider strip, which is the key case
+                # missed by exact-width grouping.
+                for stack in stacks:
+                    if not stack.can_add(variant, usable_height, kerf):
+                        continue
+                    expanded_width = max(stack.width, variant.width)
+                    delta_width = expanded_width - stack.width
+                    if total_width + delta_width > usable_width + EPS:
+                        continue
+                    next_height = stack.height + (kerf if stack.variants else 0.0) + variant.height
+                    score = (
+                        delta_width,
+                        usable_height - next_height,
+                        expanded_width,
+                        stack.width,
+                        len(stack.variants),
+                    )
+                    option = (score, stack, variant)
+                    if best is None or option[0] < best[0]:
+                        best = option
+
+                new_total = total_width + (kerf if stacks else 0.0) + variant.width
+                if new_total <= usable_width + EPS:
+                    score = (
+                        variant.width,
+                        usable_height - variant.height,
+                        variant.width,
+                        float("inf"),
+                        0,
+                    )
+                    option = (score, None, variant)
+                    if best is None or option[0] < best[0]:
+                        best = option
+
+            if best is None:
+                continue
+            _, stack, variant = best
+            if stack is None:
+                stack = _StripStack(variant.width)
+                stacks.append(stack)
+            else:
+                stack.width = max(stack.width, variant.width)
+            stack.add(variant, kerf)
+            placed_ids.add(id(part))
+
+        if not stacks:
+            break
+        ordered_stacks = _best_stack_order_for_manufacturing(stock, stacks, kerf, margin)
+        layout = _draw_strip_sheet(stock, len(layouts) + 1, ordered_stacks, kerf, margin)
+        layouts.append(layout)
+        remaining = [part for part in remaining if id(part) not in placed_ids]
+        messages.append(
+            f"long rip strips on sheet {len(layouts)}: "
+            + " | ".join(
+                "+".join(f"{variant.width:.0f}x{variant.height:.0f}" for variant in stack.variants)
+                for stack in ordered_stacks
+            )
+        )
+
+    if not layouts:
+        return None
+    used_area = sum(layout.used_area for layout in layouts)
+    total_area = sum(layout.consumed_area for layout in layouts)
+    result = OptimizationResult(
+        job_type="sheet",
+        algorithm="Long Rip Strip Candidate",
+        sheet_layouts=layouts,
+        unplaced_sheet_parts=remaining,
+        total_cost=sum(layout.stock.price for layout in layouts),
+        waste=max(0.0, total_area - used_area),
+        utilization=used_area / total_area * 100.0 if total_area else 0.0,
+        messages=[
+            f"Selected packing candidate: variable-width long rip strips / {orientation_name}",
+            *messages,
+        ],
+    )
+    annotate_result_metrics(result, kerf, min_reusable_size)
+    return result
+
+
+def _build_long_rip_strip_candidates(
+    stock: list[SheetStock],
+    parts: list[SheetPart],
+    kerf: float,
+    margin: float,
+    min_reusable_size: float,
+    include_rotated_stock: bool = True,
+) -> list[OptimizationResult]:
+    candidates: list[OptimizationResult] = []
+    for orientation_name, oriented_stock in _stock_orientation_sets(stock):
+        if not include_rotated_stock and orientation_name != "stock 0deg":
+            continue
+        candidate = _build_long_rip_strip_candidate_for_stock(
+            oriented_stock, parts, kerf, margin, orientation_name, min_reusable_size
+        )
+        if candidate is not None:
+            candidates.append(candidate)
+    return candidates
 
 
 def _is_horizontal_row_candidate(part: SheetPart, stock: SheetStock) -> tuple[bool, "_PartVariant | None"]:
@@ -2767,7 +2921,7 @@ def _pack_exact_small_guillotine_sheet(
     def state_key(remaining: list[SheetPart], rects: list[Rect]) -> tuple[tuple[int, ...], tuple[tuple[int, int, int, int], ...]]:
         return (
             tuple(sorted(id(part) for part in remaining)),
-            tuple(sorted(tuple(round(value * 1000) for value in rect) for rect in rects)),
+            tuple(sorted((round(x * 1000), round(y * 1000), round(w * 1000), round(h * 1000)) for x, y, w, h in rects)),
         )
 
     def descend(remaining: list[SheetPart], rects: list[Rect], placed: list[PlacedSheetPart], placed_ids: set[int]) -> None:
@@ -4223,6 +4377,16 @@ def optimize_2d_vertical_segmented(
         )
     )
     candidates.extend(
+        _build_long_rip_strip_candidates(
+            stock,
+            parts,
+            kerf,
+            margin,
+            min_reusable_size,
+            include_rotated_stock=True,
+        )
+    )
+    candidates.extend(
         _build_horizontal_block_candidates(
             stock,
             parts,
@@ -4381,6 +4545,16 @@ def optimize_2d_vertical_segmented(
         for candidate in pre_prune_pool
         if _mixed_orientation_group_penalty(candidate) == 0
     ]
+    # Dominance pruning is deliberately geometry-centric.  Keep the best
+    # variable-width rip plan alive as well: a dense free-form candidate may
+    # dominate it numerically, but then be excluded later by Comfort's
+    # production-plan filter.  Without this protection the user never gets to
+    # compare the clean rip/cross-cut plan with the shelf-like fallback.
+    long_rip_candidates = [
+        candidate
+        for candidate in pre_prune_pool
+        if "long rip strip" in candidate.algorithm.lower()
+    ]
 
     def protection_priority(candidate: OptimizationResult) -> tuple[float, ...]:
         return (
@@ -4401,6 +4575,13 @@ def optimize_2d_vertical_segmented(
 
     best_mixed = min(mixed_candidates, key=protection_key) if mixed_candidates else None
     best_uniform = min(uniform_candidates, key=protection_key) if uniform_candidates else None
+    best_long_rip = min(long_rip_candidates, key=protection_key) if long_rip_candidates else None
+    # Generic Pareto metrics and the candidate cap must not discard the
+    # actual winner under the selected production mode's objective function.
+    best_mode_candidate = min(
+        pre_prune_pool,
+        key=lambda candidate: (score_before_prune(candidate, kerf, min_reusable_size), _long_axis_tiebreak(candidate)),
+    ) if pre_prune_pool else None
     protected_candidate = (
         best_mixed
         if best_mixed is not None
@@ -4420,11 +4601,17 @@ def optimize_2d_vertical_segmented(
     if protected_candidate is not None and not any(candidate is protected_candidate for candidate in candidates):
         candidates.append(protected_candidate)
         pruned_count = max(0, pruned_count - 1)
+    if best_long_rip is not None and not any(candidate is best_long_rip for candidate in candidates):
+        candidates.append(best_long_rip)
+        pruned_count = max(0, pruned_count - 1)
+    if best_mode_candidate is not None and not any(candidate is best_mode_candidate for candidate in candidates):
+        candidates.append(best_mode_candidate)
+        pruned_count = max(0, pruned_count - 1)
 
     candidate_debug = [
         _candidate_debug_line(f"{index + 1}/{candidate.algorithm}", candidate, kerf, min_reusable_size)
         for index, candidate in enumerate(candidates)
-    ]
+    ] if debug_enabled else []
 
     selectable = candidates
     if production_mode:
@@ -4433,6 +4620,13 @@ def optimize_2d_vertical_segmented(
             for candidate in candidates
             if all(layout.is_guillotine_feasible for layout in candidate.sheet_layouts)
         ]
+        if not feasible_layout_candidates:
+            return OptimizationResult(
+                job_type="sheet",
+                algorithm="Vertical Segmented Guillotine",
+                unplaced_sheet_parts=_expand_parts(parts),
+                messages=["Nie znaleziono bezpiecznego rozkroju gilotynowego. Zmień format płyt lub parametry cięcia."],
+            )
         # Use minimum non-filler unplaced instead of "zero unplaced" so that
         # non-filler-first candidates (fillers deliberately deferred to missing-sheet
         # waste bands) are not excluded from the selectable pool.  When a non-filler-first
@@ -4480,10 +4674,12 @@ def optimize_2d_vertical_segmented(
                     any_primary = _comfort_score(best_any, kerf, min_reusable_size)[:3]
                     strip_len = _total_saved_used_length(best_strip)
                     dense_len = _total_saved_used_length(best_any)
+                    best_strip_is_long_rip = "long rip strip" in best_strip.algorithm.lower()
                     if any_primary < strip_primary or (
                         any_primary == strip_primary and dense_len <= strip_len * 0.90
                     ) or (
                         any_primary == strip_primary
+                        and not best_strip_is_long_rip
                         and dense_len <= strip_len + EPS
                         and _long_axis_tiebreak(best_any) < _long_axis_tiebreak(best_strip)
                     ):

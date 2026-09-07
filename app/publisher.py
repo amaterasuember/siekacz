@@ -306,16 +306,17 @@ class PublisherDialog(QDialog):
             return
         self.btn_publish.setEnabled(False)
         self.progress.show()
-        self.thread = QThread(self)
+        self._publish_thread = QThread(self)
         self.worker = PublisherWorker(token, version, notes)
-        self.worker.moveToThread(self.thread)
-        self.thread.started.connect(self.worker.run)
+        self.worker.moveToThread(self._publish_thread)
+        self._publish_thread.started.connect(self.worker.run)
         self.worker.progress.connect(self.status_lbl.setText)
         self.worker.finished.connect(self._on_finished)
-        self.worker.finished.connect(self.thread.quit)
-        self.thread.finished.connect(self.worker.deleteLater)
-        self.thread.finished.connect(self.thread.deleteLater)
-        self.thread.start()
+        self.worker.finished.connect(self._publish_thread.quit)
+        self._publish_thread.finished.connect(self.worker.deleteLater)
+        self._publish_thread.finished.connect(self._publish_thread.deleteLater)
+        self._publish_thread.finished.connect(lambda: setattr(self, "_publish_thread", None))
+        self._publish_thread.start()
 
     def _on_finished(self, success: bool, message: str) -> None:
         self.progress.hide()
@@ -326,8 +327,15 @@ class PublisherDialog(QDialog):
         else:
             QMessageBox.critical(self, "Błąd", message)
 
+    def reject(self) -> None:
+        thread = getattr(self, "_publish_thread", None)
+        if thread is not None and thread.isRunning():
+            QMessageBox.warning(self, "Operacja w toku", "Nie można zamknąć okna podczas publikacji.")
+            return
+        super().reject()
+
     def closeEvent(self, event) -> None:
-        if hasattr(self, "thread") and self.thread.isRunning():
+        if getattr(self, "_publish_thread", None) is not None and self._publish_thread.isRunning():
             QMessageBox.warning(self, "Operacja w toku", "Nie można zamknąć okna podczas publikacji.")
             event.ignore()
             return

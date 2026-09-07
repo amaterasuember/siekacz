@@ -1,0 +1,6 @@
+{
+  "include": ["app", "ui", "algorithms", "core", "workers", "import_export", "database", "cad", "main.py"],
+  "venvPath": ".",
+  "venv": ".venv",
+  "typeCheckingMode": "basic"
+}

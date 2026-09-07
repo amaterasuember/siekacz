@@ -36,9 +36,11 @@ def _validated_id(value: object, field_name: str = "id") -> str:
 
 
 def _finite(value: object, field_name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        raise CadValidationError(f"Pole {field_name} musi być liczbą.")
     try:
         number = float(value)
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, OverflowError) as exc:
         raise CadValidationError(f"Pole {field_name} musi być liczbą.") from exc
     if not math.isfinite(number):
         raise CadValidationError(f"Pole {field_name} musi być skończoną liczbą.")

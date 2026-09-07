@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Property, QEasingCurve, QPropertyAnimation, QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QLinearGradient, QPainter, QPen
+from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import QApplication, QWidget
 
 
@@ -77,7 +77,8 @@ class ToggleSwitch(QWidget):
         t = self._pos
 
         track = QRectF(0.5, 0.5, w - 1.0, h - 1.0)
-        theme = QApplication.instance().property("theme") if QApplication.instance() else "dark"
+        app = QApplication.instance()
+        theme = app.property("theme") if app is not None else "dark"
         is_light = theme == "light"
 
         if is_light:

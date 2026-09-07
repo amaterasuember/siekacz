@@ -139,8 +139,10 @@ class MainWindow(QMainWindow):
             import_menu.addAction(action)
 
         export_menu.addAction(self.export_pdf_action)
-        export_menu.addAction(QAction("Tabele projektu XLSX", self, triggered=self.export_xlsx))
-        export_menu.addAction(QAction("Formatki CSV", self, triggered=self.export_parts_csv))
+        for label, callback in (("Tabele projektu XLSX", self.export_xlsx), ("Formatki CSV", self.export_parts_csv)):
+            action = QAction(label, self)
+            action.triggered.connect(callback)
+            export_menu.addAction(action)
         export_menu.addAction(self.export_png_action)
         tools_menu.addAction(self.load_leftovers_action)
         toolbar.addSeparator()
@@ -361,7 +363,7 @@ class MainWindow(QMainWindow):
             self.layout_view.set_theme("light")
             self.layout_view.set_print_mode(True)
             self.layout_view.show_result(self.state.last_result)
-            export_scene_png(self.layout_view.scene, path, background="#ffffff")
+            export_scene_png(self.layout_view.graphics_scene, path, background="#ffffff")
         finally:
             self.layout_view.set_print_mode(current_print_mode)
             self.layout_view.set_theme(current_theme)

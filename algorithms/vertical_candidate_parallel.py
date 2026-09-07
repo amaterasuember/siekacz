@@ -3,7 +3,10 @@ from __future__ import annotations
 import logging
 import os
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from typing import Any
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from algorithms.two_d_vertical_segmented import _Strategy
 
 from core.models import OptimizationResult, SheetPart, SheetStock
 
@@ -33,7 +36,7 @@ def _init_strategy_worker(
     _WORKER_CONTEXT = (stock, parts, kerf, margin, mode)
 
 
-def _build_strategy_candidate(strategy: Any) -> OptimizationResult:
+def _build_strategy_candidate(strategy: _Strategy) -> OptimizationResult:
     # Imported lazily to avoid a top-level circular import: two_d imports this
     # module, while worker processes need two_d's _build_result and _Strategy.
     from algorithms.two_d_vertical_segmented import _build_result
@@ -50,7 +53,7 @@ def build_strategy_candidates_parallel(
     kerf: float,
     margin: float,
     mode: str,
-    strategies: list[object],
+    strategies: list[_Strategy],
 ) -> list[OptimizationResult]:
     if not strategies:
         return []

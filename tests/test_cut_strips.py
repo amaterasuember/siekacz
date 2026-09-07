@@ -101,7 +101,7 @@ def test_top_keeps_band_details_and_bottom_has_one_used_length_summary() -> None
     sheet_rect = QRectF(100, 100, 1260, 630)
     view._draw_segment_dimensioning(layout, sheet_rect, 0.42, False)
     labels = [
-        item for item in view.scene.items()
+        item for item in view.graphics_scene.items()
         if isinstance(item, QGraphicsTextItem)
     ]
     detail = [item for item in labels if item.toPlainText() == "9 × 40 mm"]

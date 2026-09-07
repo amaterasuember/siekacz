@@ -4,6 +4,6 @@
   "app/expiry.py": "9d9515322dae1d6c7c73d6d439dc259132f46899b4b842980c2094f03237c670",
   "app/license_acceptance.py": "501dd828bd5ac1f9abb8a2cdd3205dbee4b32c16cfb479359edf25b06fed67cb",
   "app/license_text.py": "95704cce42c7c06ae1b000b74242d96add76e6186a1b693737a55d3b9f5cd50e",
-  "app/version.py": "b4d462c6d1da94762875c54e9ee06bb407b485e68feba38be4cb0079beaf9d3e",
+  "app/version.py": "60b540c648aa38bb6e359c672d7dfcc49cc6b49b574bb25d24518f290382a5e6",
   "LICENSE": "50ac39ce8c631b7221adc04c861e9863dd2ee3e08c19ea9c3129fa52f915c4af"
 }

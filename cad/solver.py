@@ -558,7 +558,7 @@ def _constraint_residual(
         return np.asarray((parameterization.line_length(references[0], vector) - _required_value(constraint),))
     if kind == ConstraintType.ARC_LENGTH:
         entity = parameterization.sketch.entities.get(references[0].entity_id)
-        values = parameterization.entity_values(entity.id, vector)
+        values = parameterization.entity_values(references[0].entity_id, vector)
         if isinstance(entity, ArcEntity):
             length = float(values[2]) * math.radians(abs(float(values[4])))
         elif isinstance(entity, EllipticalArcEntity):
@@ -731,7 +731,7 @@ def _measured_value(parameterization: _Parameterization, constraint: SketchConst
             return parameterization.line_length(refs[0], vector)
         if kind == ConstraintType.ARC_LENGTH:
             entity = parameterization.sketch.entities.get(refs[0].entity_id)
-            values = parameterization.entity_values(entity.id, vector)
+            values = parameterization.entity_values(refs[0].entity_id, vector)
             if isinstance(entity, ArcEntity):
                 return float(values[2]) * math.radians(abs(float(values[4])))
             if isinstance(entity, EllipticalArcEntity):
@@ -794,6 +794,7 @@ def solve_sketch(sketch: Sketch) -> SolverResult:
     conflicting: tuple[str, ...] = ()
     redundant: tuple[str, ...] = ()
     vector_for_result = attempt.vector if attempt.converged else parameterization.initial
+    degrees_of_freedom = int(parameterization.initial.size)
 
     if broken_ids:
         status = SketchSolveStatus.UNSOLVABLE

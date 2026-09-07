@@ -267,18 +267,28 @@ def read_material_catalog(path: str | Path) -> list[MaterialCatalogEntry]:
 
 
 def catalog_from_dicts(items: Iterable[dict[str, object]]) -> list[MaterialCatalogEntry]:
+    from core.validation import safeNumber
+
+    def number(item: dict[str, object], key: str) -> float:
+        value = safeNumber(item.get(key, 0) or 0)
+        if value is None or value < 0:
+            raise ValueError(f"Nieprawidłowa wartość katalogu: {key}")
+        return value
+
     result: list[MaterialCatalogEntry] = []
     for item in items:
+        if not isinstance(item, dict):
+            continue
         try:
             result.append(MaterialCatalogEntry(
                 material=str(item.get("material", "")).strip(),
-                thickness=float(item.get("thickness", 0) or 0),
-                net_price_m2=float(item.get("net_price_m2", 0) or 0),
-                gross_price_m2=float(item.get("gross_price_m2", 0) or 0),
+                thickness=number(item, "thickness"),
+                net_price_m2=number(item, "net_price_m2"),
+                gross_price_m2=number(item, "gross_price_m2"),
                 product_name=str(item.get("product_name", "")).strip(),
                 source_sheet=str(item.get("source_sheet", "")).strip(),
-                width=float(item.get("width", 0) or 0),
-                height=float(item.get("height", 0) or 0),
+                width=number(item, "width"),
+                height=number(item, "height"),
             ))
         except (TypeError, ValueError):
             continue

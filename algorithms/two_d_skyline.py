@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+from core.grain import part_orientations
 from core.models import OptimizationResult, PlacedSheetPart, SheetLayout, SheetPart, SheetStock, materials_are_compatible
 
 
@@ -25,10 +26,7 @@ def _expand_stock(stock: list[SheetStock]) -> list[SheetStock]:
 
 
 def _orientations(part: SheetPart, stock: SheetStock) -> list[tuple[float, float, bool]]:
-    options = [(part.width, part.height, False)]
-    if part.allow_rotation and stock.allow_rotation and part.grain_direction == "none":
-        options.append((part.height, part.width, True))
-    return options
+    return list(part_orientations(part, stock))
 
 
 def _place(layout: SheetLayout, shelves: list[dict[str, float]], part: SheetPart, kerf: float, margin: float) -> bool:

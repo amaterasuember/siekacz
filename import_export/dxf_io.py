@@ -17,10 +17,10 @@ class DxfError(ValueError):
 
 def _require_ezdxf():
     try:
-        import ezdxf  # type: ignore[import-not-found]
+        from ezdxf import filemanagement  # type: ignore[import-not-found]
     except ImportError as exc:  # pragma: no cover - covered by packaging checks
         raise DxfError("Brakuje biblioteki DXF. Uruchom aktualizacje programu.") from exc
-    return ezdxf
+    return filemanagement
 
 
 def _bounds_from_points(points: list[tuple[float, float]]) -> tuple[float, float, float, float] | None:
@@ -60,12 +60,12 @@ def _entity_bounds(entity) -> tuple[float, float, float, float] | None:
 
 def import_dxf_parts(path: str | Path, material: str = "", thickness: float = 0.0) -> list[SheetPart]:
     """Import the complete DXF drawing as one rectangular cutting blank."""
-    ezdxf = _require_ezdxf()
+    filemanagement = _require_ezdxf()
     source = Path(path)
     if not source.is_file():
         raise DxfError(f"Nie znaleziono pliku DXF: {source}")
     try:
-        document = ezdxf.readfile(source)
+        document = filemanagement.readfile(source)
     except Exception as exc:
         raise DxfError(f"Nie udalo sie odczytac DXF: {exc}") from exc
 
@@ -137,13 +137,13 @@ def _layout_title(layout: SheetLayout) -> str:
 
 def export_layout_dxf(path: str | Path, result: OptimizationResult) -> Path:
     """Export board contours and placed rectangular blanks to one DXF drawing."""
-    ezdxf = _require_ezdxf()
+    filemanagement = _require_ezdxf()
     target = Path(path)
     if target.suffix.lower() != ".dxf":
         target = target.with_suffix(".dxf")
     target.parent.mkdir(parents=True, exist_ok=True)
 
-    document = ezdxf.new("R2010")
+    document = filemanagement.new("R2010")
     document.header["$INSUNITS"] = 4  # millimetres
     document.layers.new("PLYTY", dxfattribs={"color": 5})
     document.layers.new("FORMATKI", dxfattribs={"color": 3})

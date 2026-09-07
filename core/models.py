@@ -213,7 +213,7 @@ class OptimizationSettings:
     algorithm: str = "Vertical Segmented Guillotine"
     optimization_mode: str = "comfort"
     mode: str = "minimize_waste"
-    kerf: float = 3.0
+    kerf: float = 5.0
     kerf_tolerance: float = 0.2
     margin: float = 0.0
     sheet_allowance: float = 0.0

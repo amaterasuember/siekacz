@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-from PySide6.QtCore import QRectF, Qt
-from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen
+import math
+
+from PySide6.QtCore import QByteArray, QIODevice, QRectF, QSaveFile, Qt
+from PySide6.QtGui import QColor, QFont, QImage, QImageWriter, QPainter, QPen
 from PySide6.QtWidgets import QGraphicsScene
 
 
@@ -13,10 +15,17 @@ def export_scene_png(
     header_text: str = "",
     include_cut_time_box: bool = True,
 ) -> None:
+    if isinstance(width, bool) or not isinstance(width, int) or not 320 <= width <= 16000:
+        raise ValueError("Szerokość PNG musi wynosić od 320 do 16000 pikseli.")
     bounds = scene.itemsBoundingRect().adjusted(-30, -30, 30, 30)
     if bounds.isEmpty():
         bounds = QRectF(0, 0, 1200, 800)
     scale = width / max(bounds.width(), 1.0)
+    output_width = width
+    # Lay out the header at a readable design width, then scale the entire
+    # header together. Fixed-size boxes otherwise clip in smaller exports.
+    width = max(2400, width)
+    header_scale = output_width / width
 
     # ── Cut-time info box: right-aligned, generous height so handwritten
     # dates/times actually fit.  Each entry gets a label row + a drawn
@@ -29,15 +38,23 @@ def export_scene_png(
     # Height: pad_top(16) + label(32) + write_gap(44) + section_gap(20)
     #       + label(32) + write_gap(44) + pad_bottom(16) = 204
     box_height_px = 204
-    box_right_px = box_left_px + box_width_px
 
     header_height = (box_top_px + box_height_px + 22) if include_cut_time_box else (96 if header_text else 0)
-    height = max(1, int(bounds.height() * scale) + header_height)
-    image = QImage(width, height, QImage.Format.Format_ARGB32)
+    header_pixels = math.ceil(header_height * header_scale)
+    content_height = bounds.height() * scale
+    if not math.isfinite(content_height) or content_height < 0:
+        raise ValueError("Nieprawidłowy obszar podglądu do eksportu.")
+    height = max(1, math.ceil(content_height) + header_pixels)
+    if output_width * height > 64_000_000:
+        raise ValueError("Rozkrój jest za duży dla jednego PNG. Eksportuj wybrane płyty osobno lub wybierz raport PDF.")
+    image = QImage(output_width, height, QImage.Format.Format_ARGB32)
+    if image.isNull():
+        raise RuntimeError("Brak pamięci na obraz PNG. Zmniejsz rozmiar eksportu.")
     fill = background if isinstance(background, QColor) else QColor(background) if isinstance(background, str) else background
     image.fill(fill)
     painter = QPainter(image)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.scale(header_scale, header_scale)
 
     if header_text:
         painter.setPen(QPen(QColor("#111827")))
@@ -49,8 +66,8 @@ def export_scene_png(
         # box, with a 32-pixel gutter.
         right_reserved = int(width - box_left_px + 32) if include_cut_time_box else 88
         painter.drawText(
-            QRectF(44, 20, max(120, width - right_reserved), 56),
-            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+            QRectF(44, 20, max(120, width - right_reserved - 44), max(56, header_height - 54)),
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter | Qt.TextFlag.TextWordWrap,
             header_text,
         )
         painter.setPen(QPen(QColor("#d1d5db"), 2))
@@ -110,6 +127,21 @@ def export_scene_png(
             painter.setPen(QPen(QColor("#d1d5db"), 2))
             painter.drawLine(44, header_height - 14, width - 44, header_height - 14)
 
-    scene.render(painter, QRectF(0, header_height, width, height - header_height), bounds)
-    painter.end()
-    image.save(path, "PNG")
+    painter.resetTransform()
+    try:
+        scene.render(painter, QRectF(0, header_pixels, output_width, height - header_pixels), bounds)
+    finally:
+        painter.end()
+    output = QSaveFile(path)
+    if not output.open(QIODevice.OpenModeFlag.WriteOnly):
+        raise OSError(f"Nie można zapisać PNG: {output.errorString()}")
+    try:
+        writer = QImageWriter(output, QByteArray(b"PNG"))
+        if not writer.write(image):
+            raise OSError(f"Nie udało się zakodować PNG: {writer.errorString()}")
+        if not output.commit():
+            raise OSError(f"Nie można zapisać PNG: {output.errorString()}")
+    finally:
+        if output.isOpen():
+            output.cancelWriting()
+            output.commit()  # discard the temporary file and close the device

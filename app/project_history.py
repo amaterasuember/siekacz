@@ -28,6 +28,7 @@ from core.models import (
     SheetStock,
 )
 from database.db import APP_DIR
+from core.atomic_file import atomic_write_text
 
 
 HISTORY_PATH = APP_DIR / "siekacz_project_history.json"
@@ -95,7 +96,7 @@ def _read_file(*, for_write: bool = False) -> list[dict[str, Any]]:
         return []
     try:
         data = json.loads(HISTORY_PATH.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, ValueError) as exc:
         backup = _preserve_corrupt_history()
         message = (
             "Historia projektów jest nieczytelna i nie zostanie nadpisana. "
@@ -107,7 +108,7 @@ def _read_file(*, for_write: bool = False) -> list[dict[str, Any]]:
         if for_write:
             raise ProjectHistoryReadError(message) from exc
         return []
-    if not isinstance(data, list):
+    if not isinstance(data, list) or any(not isinstance(item, dict) for item in data):
         backup = _preserve_corrupt_history()
         message = (
             "Historia projektów ma nieprawidłowy format i nie zostanie nadpisana. "
@@ -126,9 +127,7 @@ def _write_file(items: list[dict[str, Any]]) -> None:
         APP_DIR.mkdir(parents=True, exist_ok=True)
         # Write to a temp file first, then rename — prevents corrupting the
         # history if the process is killed or the disk fills up mid-write.
-        tmp = HISTORY_PATH.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp.replace(HISTORY_PATH)
+        atomic_write_text(HISTORY_PATH, json.dumps(items, ensure_ascii=False, indent=2, allow_nan=False))
     except OSError as exc:
         _logger.error("Cannot write project history to %s: %s", HISTORY_PATH, exc)
         raise RuntimeError(
@@ -140,7 +139,7 @@ def _write_file(items: list[dict[str, Any]]) -> None:
 
 def list_projects() -> list[dict[str, Any]]:
     items = _read_file()
-    return sorted(items, key=lambda item: item.get("modified_at") or item.get("created_at") or "", reverse=True)
+    return sorted(items, key=lambda item: str(item.get("modified_at") or item.get("created_at") or ""), reverse=True)
 
 
 def get_project(project_id: str) -> dict[str, Any] | None:

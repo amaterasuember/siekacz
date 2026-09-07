@@ -97,6 +97,8 @@ def validate_length_dimensions(text: str, parameter_names: set[str] | None = Non
             elif isinstance(node.op, ast.Pow):
                 if right != 0 or not isinstance(node.right, ast.Constant):
                     raise CadValidationError("Wykładnik musi być bezwymiarową stałą.")
+                if isinstance(node.right.value, bool) or not isinstance(node.right.value, (int, float)):
+                    raise CadValidationError("Wykładnik musi być liczbą.")
                 exponent = float(node.right.value)
                 result = int(left * exponent) if float(left * exponent).is_integer() else 99
             else:

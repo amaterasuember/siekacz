@@ -741,7 +741,7 @@ def build_repair_plan(
                 name="Naprawa malej szczeliny",
             ))
             existing_pairs.add(pair)
-    remove = tuple(dict.fromkeys((*duplicate_ids, *micro_ids)))
+    tuple(dict.fromkeys((*duplicate_ids, *micro_ids)))
     return ProfileRepairPlan(
         tuple(entity_id for entity_id in dict.fromkeys(duplicate_ids) if entity_id in sketch.entities),
         tuple(entity_id for entity_id in dict.fromkeys(micro_ids) if entity_id in sketch.entities and entity_id not in duplicate_ids),

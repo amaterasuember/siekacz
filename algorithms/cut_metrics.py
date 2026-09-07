@@ -270,9 +270,9 @@ def compute_cut_summary(result: OptimizationResult, feed_m_per_min: float | None
 
 def estimate_job_time_seconds(
     saw_m: float,
-    cuts: int,
-    pieces: int,
-    rotations: int,
+    cuts: float,
+    pieces: float,
+    rotations: float,
     feed_mm_per_s: float = _FEED_MM_PER_S,
     reposition_s: float = REPOSITION_S_PER_CUT,
     handling_s: float = HANDLING_S_PER_PIECE,
@@ -287,3 +287,26 @@ def estimate_job_time_seconds(
         + max(0, rotations) * max(0.0, rotation_s)
     )
     return blade + overhead
+
+
+def annotate_cut_times(result: OptimizationResult) -> None:
+    """Keep saved card times and whole-order time consistent with the UI model.
+
+    Card times are contributions to the job, including identical-board stacks.
+    Normalizing the contributions also preserves the summary's legacy fallback
+    when some imported layouts have no stored cut-operation metrics.
+    """
+    layouts = _iter_layouts(result)
+    total_time = compute_cut_summary(result).total_time_s
+    multipliers = _stack_time_multipliers(layouts)
+    contributions = []
+    for layout in layouts:
+        single = OptimizationResult(
+            job_type="sheet", algorithm=result.algorithm,
+            sheet_layouts=[layout], saw_feed_m_per_min=result.saw_feed_m_per_min,
+        )
+        contributions.append(compute_cut_summary(single).total_time_s * multipliers.get(id(layout), 1.0))
+    weight = math.fsum(contributions)
+    for layout, contribution in zip(layouts, contributions):
+        layout.estimated_cut_time_s = total_time * contribution / weight if weight else 0.0
+    result.total_estimated_cut_time_s = math.fsum(layout.estimated_cut_time_s for layout in layouts)

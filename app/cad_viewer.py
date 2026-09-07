@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from cad.inspection import CadEdge, CadInspectionError, CadInspectionModel, load_cad_inspection
+from cad.inspection import CadInspectionError, CadInspectionModel, load_cad_inspection
 from database import repositories
 
 
@@ -147,7 +147,7 @@ class CadInspectionCanvas(QWidget):
         center = tuple((minimum[axis] + maximum[axis]) / 2.0 for axis in range(3))
         return [
             self._rotate(
-                tuple(point[axis] - center[axis] for axis in range(3)),
+                (point[0] - center[0], point[1] - center[1], point[2] - center[2]),
                 self.yaw,
                 self.pitch,
                 self.roll,
@@ -229,9 +229,11 @@ class CadInspectionCanvas(QWidget):
         selected_pen = QPen(QColor("#ffd166"), 3.0)
         selected_pen.setCosmetic(True)
         # Draw rear edges first so the selected geometry remains readable.
+        model = self.model
+        assert model is not None
         order = sorted(
-            range(len(self.model.edges)),
-            key=lambda index: (self._depths[self.model.edges[index].start] + self._depths[self.model.edges[index].end]) / 2.0,
+            range(len(model.edges)),
+            key=lambda index: (self._depths[model.edges[index].start] + self._depths[model.edges[index].end]) / 2.0,
         )
         for index in order:
             edge = self.model.edges[index]

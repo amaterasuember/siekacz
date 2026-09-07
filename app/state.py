@@ -5,6 +5,7 @@ import logging
 from pathlib import Path
 
 from core.models import Project
+from core.atomic_file import atomic_write_text
 from database import repositories
 
 
@@ -55,7 +56,7 @@ class AppState:
         if target is None:
             raise ValueError("A project path is required.")
         try:
-            target.write_text(json.dumps(self.project.to_dict(), indent=2), encoding="utf-8")
+            atomic_write_text(target, json.dumps(self.project.to_dict(), indent=2, allow_nan=False))
         except OSError as exc:
             raise ValueError(
                 f"Nie można zapisać pliku projektu:\n{target}\n\n{exc}"
@@ -67,8 +68,7 @@ class AppState:
     def autosave(self) -> None:
         try:
             AUTOSAVE_PATH.parent.mkdir(parents=True, exist_ok=True)
-            AUTOSAVE_PATH.write_text(json.dumps(self.project.to_dict(), indent=2), encoding="utf-8")
+            atomic_write_text(AUTOSAVE_PATH, json.dumps(self.project.to_dict(), indent=2, allow_nan=False))
         except Exception as exc:
             # Autosave failures are non-fatal — log but don't interrupt the user.
             _logger.warning("Autosave failed: %s", exc)
-

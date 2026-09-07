@@ -42,14 +42,14 @@ class CadInspectionModel:
         if not self.vertices:
             return (0.0, 0.0, 0.0), (0.0, 0.0, 0.0)
         return (
-            tuple(min(point[axis] for point in self.vertices) for axis in range(3)),
-            tuple(max(point[axis] for point in self.vertices) for axis in range(3)),
+            (min(p[0] for p in self.vertices), min(p[1] for p in self.vertices), min(p[2] for p in self.vertices)),
+            (max(p[0] for p in self.vertices), max(p[1] for p in self.vertices), max(p[2] for p in self.vertices)),
         )
 
     @property
     def dimensions(self) -> tuple[float, float, float]:
         minimum, maximum = self.bounds
-        return tuple(maximum[axis] - minimum[axis] for axis in range(3))
+        return (maximum[0] - minimum[0], maximum[1] - minimum[1], maximum[2] - minimum[2])
 
     def edge_length(self, edge_index: int) -> float:
         edge = self.edges[edge_index]
@@ -73,7 +73,7 @@ class _GeometryBuilder:
             float(values[1]) if len(values) > 1 else 0.0,
             float(values[2]) if len(values) > 2 else 0.0,
         )
-        key = tuple(round(value / self._tolerance) for value in xyz)
+        key = (round(xyz[0] / self._tolerance), round(xyz[1] / self._tolerance), round(xyz[2] / self._tolerance))
         existing = self._vertex_map.get(key)
         if existing is not None:
             return existing
@@ -141,14 +141,14 @@ def _dxf_entities(entities):
 
 def load_dxf(path: str | Path) -> CadInspectionModel:
     try:
-        import ezdxf
+        from ezdxf import filemanagement
         from ezdxf.path import make_path
     except ImportError as exc:  # pragma: no cover - deployment guard
         raise CadInspectionError("Brakuje biblioteki ezdxf.") from exc
 
     source = Path(path)
     try:
-        document = ezdxf.readfile(source)
+        document = filemanagement.readfile(source)
     except Exception as exc:
         raise CadInspectionError(f"Nie udało się odczytać DXF: {exc}") from exc
     unit_code = int(document.header.get("$INSUNITS", 0) or 0)

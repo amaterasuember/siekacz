@@ -70,7 +70,8 @@ class CuttingModeSwitch(QWidget):
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        theme = QApplication.instance().property("theme") if QApplication.instance() else "dark"
+        app = QApplication.instance()
+        theme = app.property("theme") if app is not None else "dark"
         is_light = theme == "light"
 
         rect = QRectF(1.5, 1.5, self.width() - 3, self.height() - 3)

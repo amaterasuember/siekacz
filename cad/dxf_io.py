@@ -4,7 +4,13 @@ import math
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, TypedDict
+
+from ezdxf.document import Drawing
+from ezdxf.entities.dxfentity import DXFEntity
+from ezdxf.entities.spline import Spline
+from ezdxf.entities.lwpolyline import LWPolyline
+from ezdxf.entities.polyline import Polyline
 
 from cad.model import (
     ArcEntity, BSplineEntity, CadLayer, CircleEntity, EllipseEntity, EllipticalArcEntity,
@@ -39,7 +45,7 @@ class DxfImportResult:
     report: DxfImportReport
 
 
-def _style(source: object) -> EntityStyle:
+def _style(source: DXFEntity) -> EntityStyle:
     dxf = source.dxf
     return EntityStyle(
         color=int(dxf.get("color", 256)),
@@ -50,7 +56,13 @@ def _style(source: object) -> EntityStyle:
     )
 
 
-def _common(source: object) -> dict[str, object]:
+class _EntityCommon(TypedDict):
+    layer: str
+    visible: bool
+    style: EntityStyle
+
+
+def _common(source: DXFEntity) -> _EntityCommon:
     return {
         "layer": str(source.dxf.get("layer", "0"))[:128],
         "visible": not bool(source.dxf.get("invisible", 0)),
@@ -58,11 +70,11 @@ def _common(source: object) -> dict[str, object]:
     }
 
 
-def _read_layers(dxf: object) -> dict[str, CadLayer]:
+def _read_layers(dxf: Drawing) -> dict[str, CadLayer]:
     result: dict[str, CadLayer] = {}
     for source in dxf.layers:
         true_color = source.rgb
-        rgb = None if true_color is None else (true_color.r << 16) | (true_color.g << 8) | true_color.b
+        rgb = None if true_color is None else (true_color[0] << 16) | (true_color[1] << 8) | true_color[2]
         layer = CadLayer(
             name=str(source.dxf.name), color=abs(int(source.color)), true_color=rgb,
             linetype=str(source.dxf.linetype),
@@ -73,7 +85,7 @@ def _read_layers(dxf: object) -> dict[str, CadLayer]:
     return result
 
 
-def _entity_from_dxf(source: object) -> SketchEntity | None:
+def _entity_from_dxf(source: DXFEntity) -> SketchEntity | None:
     kind = source.dxftype()
     common = _common(source)
     if kind == "LINE":
@@ -100,7 +112,7 @@ def _entity_from_dxf(source: object) -> SketchEntity | None:
         if abs(abs(raw_sweep) - 360.0) <= 1e-7 or abs(raw_sweep) <= 1e-7:
             return EllipseEntity(Point2D(center.x, center.y), major, minor, rotation, **common)
         return EllipticalArcEntity(Point2D(center.x, center.y), major, minor, rotation, start, raw_sweep % 360.0, **common)
-    if kind == "SPLINE":
+    if isinstance(source, Spline):
         control_points = list(source.control_points)
         knots = tuple(float(value) for value in source.knots)
         weights = tuple(float(value) for value in source.weights)
@@ -118,13 +130,13 @@ def _entity_from_dxf(source: object) -> SketchEntity | None:
             tuple(Point2D(float(point[0]), float(point[1])) for point in control_points),
             degree, knots, weights, bool(flags & 1), bool(flags & 2), **common,
         )
-    if kind == "LWPOLYLINE":
+    if isinstance(source, LWPolyline):
         raw = list(source.get_points("xyb"))
         points = tuple(Point2D(float(item[0]), float(item[1])) for item in raw)
         closed = bool(source.closed)
         count = len(points) if closed else max(0, len(points) - 1)
         return PolylineEntity(points, closed, tuple(float(raw[index][2]) for index in range(count)), **common)
-    if kind == "POLYLINE" and source.is_2d_polyline:
+    if isinstance(source, Polyline) and source.is_2d_polyline:
         vertices = list(source.vertices)
         points = tuple(Point2D(float(v.dxf.location.x), float(v.dxf.location.y)) for v in vertices)
         closed = bool(source.is_closed)
@@ -134,10 +146,10 @@ def _entity_from_dxf(source: object) -> SketchEntity | None:
 
 
 def import_dxf(path: str | Path) -> DxfImportResult:
-    import ezdxf
+    from ezdxf import filemanagement
 
     source_path = Path(path)
-    dxf = ezdxf.readfile(source_path)
+    dxf = filemanagement.readfile(source_path)
     layers = _read_layers(dxf)
     entities: list[SketchEntity] = []
     unsupported: Counter[str] = Counter()
@@ -177,10 +189,10 @@ def _attrs(entity: SketchEntity) -> dict[str, object]:
 
 
 def export_dxf(path: str | Path, entities: Iterable[SketchEntity], layers: Iterable[CadLayer]) -> Path:
-    import ezdxf
+    from ezdxf import filemanagement
 
     target = Path(path).with_suffix(".dxf")
-    dxf = ezdxf.new("R2010")
+    dxf = filemanagement.new("R2010")
     dxf.header["$INSUNITS"] = 4
     for layer in layers:
         target_layer = dxf.layers.get(layer.name) if layer.name in dxf.layers else dxf.layers.add(layer.name)

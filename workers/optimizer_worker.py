@@ -3,23 +3,24 @@ from __future__ import annotations
 import logging
 import math
 import os
-import time
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from copy import deepcopy
 from dataclasses import replace
 from typing import Callable
 
 from PySide6.QtCore import QObject, Signal, Slot
 
+from algorithms.cut_metrics import annotate_cut_times
 from algorithms.one_d import optimize_1d
 from algorithms.two_d_guillotine import optimize_2d_guillotine
-from algorithms.layout_scoring import annotate_result_metrics, score_result
+from algorithms.layout_scoring import annotate_result_metrics, build_reusable_offcuts
 from algorithms.part_classification import is_small_filler_part
 from algorithms.two_d_maxrects import optimize_2d_maxrects
 from algorithms.two_d_skyline import optimize_2d_skyline
 from algorithms.two_d_vertical_segmented import optimize_2d_vertical_segmented
 from algorithms.smart_stock_mix import optimize_smart_stock_mix
+from core.layout_validation import assert_sheet_result
+from core.grain import part_orientations
 from core.models import OptimizationResult, Project, SheetPart, SheetStock, materials_are_compatible
 
 
@@ -66,9 +67,11 @@ _ENSEMBLE_WORKERS: int = min(4, max(2, (os.cpu_count() or 2)))
 
 
 def _finite_number(value: object, label: str) -> float:
+    if isinstance(value, bool):
+        raise ValueError(f"{label} musi być liczbą, nie wartością logiczną.")
     try:
         number = float(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         raise ValueError(f"{label} musi być poprawną liczbą.") from None
     if not math.isfinite(number):
         raise ValueError(f"{label} musi być skończoną liczbą.")
@@ -92,7 +95,7 @@ def _non_negative_number(value: object, label: str) -> float:
 def _positive_int(value: object, label: str) -> int:
     number = _finite_number(value, label)
     rounded = round(number)
-    if number <= 0 or abs(number - rounded) > 0.000001:
+    if number <= 0 or not number.is_integer():
         raise ValueError(f"{label} musi być dodatnią liczbą całkowitą.")
     return int(rounded)
 
@@ -121,6 +124,8 @@ def _validate_project_for_optimization(project: Project) -> None:
     kerf = _finite_number(settings.kerf, "Kerf")
     if kerf < 0:
         raise ValueError("Kerf nie może być ujemny.")
+    _non_negative_number(settings.kerf_tolerance, "Tolerancja rzazu")
+    _positive_number(settings.saw_feed_m_per_min, "Prędkość cięcia")
     margin = _non_negative_number(settings.margin, "Margines")
     _non_negative_number(settings.sheet_allowance, "Naddatek płyty")
     _non_negative_number(settings.min_reusable_offcut_size, "Minimalny użyteczny odpad")
@@ -151,6 +156,9 @@ def _validate_project_for_optimization(project: Project) -> None:
         _positive_number(stock.height, f"Płyta {index} - wysokość")
         _positive_number(stock.thickness, f"Płyta {index} - grubość")
         _positive_int(stock.quantity, f"Płyta {index} - ilość")
+        _non_negative_number(stock.price, f"Płyta {index} - cena")
+        for name in ("nominal_width", "nominal_height"):
+            _non_negative_number(getattr(stock, name), f"Płyta {index} - {name}")
         stack_size = _positive_int(getattr(stock, "stack_size", 1), f"Płyta {index} - sztapel")
         if stack_size > stock.quantity:
             raise ValueError(f"Płyta {index}: sztapel ({stack_size}) nie może być większy od ilości płyt ({stock.quantity}).")
@@ -226,7 +234,7 @@ def _runner_maxrects(stock, parts, kerf, margin, mode, min_reusable_size, cuttin
     return annotate_result_metrics(optimize_2d_maxrects(stock, parts, kerf, margin, mode), kerf, min_reusable_size)
 
 
-_SHEET_ALGORITHMS: tuple[tuple[str, callable], ...] = (
+_SHEET_ALGORITHMS: tuple[tuple[str, Callable[..., OptimizationResult]], ...] = (
     ("Vertical Segmented Guillotine", _runner_vertical_segmented),
     ("Guillotine", _runner_guillotine),
     ("Skyline", _runner_skyline),
@@ -234,7 +242,7 @@ _SHEET_ALGORITHMS: tuple[tuple[str, callable], ...] = (
 )
 
 
-def _resolve_algorithm(algorithm: str) -> tuple[str, callable]:
+def _resolve_algorithm(algorithm: str) -> tuple[str, Callable[..., OptimizationResult]]:
     """Map an algorithm string to its (display_name, runner) entry."""
     key = (algorithm or "").lower()
     if "vertical" in key or "segment" in key or "pion" in key:
@@ -319,20 +327,14 @@ def _missing_stock_for(effective_stock: list[SheetStock], missing_parts: list[Sh
 
     virtual_stock: list[SheetStock] = []
 
-    def profile(stock: SheetStock) -> tuple[float, float]:
+    def profile(stock: SheetStock) -> tuple[float, float, str]:
         # Keep the physical axis order.  Sorting a profile would silently rotate
         # grain-constrained/non-rotatable stock in the virtual-sheet path.
-        return round(float(stock.width), 4), round(float(stock.height), 4)
+        return round(float(stock.width), 4), round(float(stock.height), 4), stock.grain_direction
 
-    def part_fits(part: SheetPart, width: float, height: float) -> bool:
-        direct = part.width <= width + 0.001 and part.height <= height + 0.001
-        rotated = (
-            part.allow_rotation
-            and part.grain_direction == "none"
-            and part.height <= width + 0.001
-            and part.width <= height + 0.001
-        )
-        return direct or rotated
+    def part_fits(part: SheetPart, candidate: SheetStock) -> bool:
+        return any(w <= candidate.width + 0.001 and h <= candidate.height + 0.001
+                   for w, h, _ in part_orientations(part, candidate))
 
     for (material, thickness), parts in parts_by_material.items():
         candidates = [
@@ -353,17 +355,17 @@ def _missing_stock_for(effective_stock: list[SheetStock], missing_parts: list[Sh
         # Non-dominated real profiles are retained for genuinely complementary
         # formats (for example, two non-rotatable grain directions).
         usable_candidates = exact_candidates or candidates
-        templates_by_profile: dict[tuple[float, float], SheetStock] = {}
+        templates_by_profile: dict[tuple[float, float, str], SheetStock] = {}
         for candidate in usable_candidates:
-            if any(part_fits(part, candidate.width, candidate.height) for part in parts):
+            if any(part_fits(part, candidate) for part in parts):
                 templates_by_profile.setdefault(profile(candidate), candidate)
 
-        profile_candidates: list[tuple[tuple[float, float], SheetStock, set[int], float]] = []
+        profile_candidates: list[tuple[tuple[float, float, str], SheetStock, set[int], float]] = []
         for candidate_profile, candidate in templates_by_profile.items():
             fitting_part_indexes = {
                 index
                 for index, part in enumerate(parts)
-                if part_fits(part, candidate.width, candidate.height)
+                if part_fits(part, candidate)
             }
             profile_candidates.append(
                 (
@@ -374,7 +376,7 @@ def _missing_stock_for(effective_stock: list[SheetStock], missing_parts: list[Sh
                 )
             )
 
-        non_dominated_profiles: list[tuple[tuple[float, float], SheetStock]] = []
+        non_dominated_profiles: list[tuple[tuple[float, float, str], SheetStock]] = []
         for index, (candidate_profile, candidate, fitting_parts, area) in enumerate(profile_candidates):
             dominated = any(
                 other_index != index
@@ -391,7 +393,7 @@ def _missing_stock_for(effective_stock: list[SheetStock], missing_parts: list[Sh
                 non_dominated_profiles.append((candidate_profile, candidate))
 
         quantity = max(1, sum(max(0, int(part.quantity)) for part in parts))
-        for (width, height), template in non_dominated_profiles:
+        for (width, height, _grain), template in non_dominated_profiles:
             virtual_stock.append(
                 replace(
                     template,
@@ -641,7 +643,7 @@ def _attach_missing_sheet_layouts(
     # parts together on the available 3000 mm virtual board.
     virtual_reference = _missing_stock_for(effective_stock, missing_parts)
     virtual_profiles = {
-        tuple(sorted((round(item.width, 4), round(item.height, 4))))
+        (round(min(item.width, item.height), 4), round(max(item.width, item.height), 4))
         for item in virtual_reference
     }
     seeded_layouts, remaining_missing_parts = _seed_missing_layouts_from_real_boards(
@@ -754,9 +756,27 @@ def optimize_sheet_project(project: Project, progress_callback: ProgressCallback
         progress_callback=_scaled_progress(progress_callback, 88, 98),
     )
     _assert_result_sheet_compatibility(result)
-    result.saw_feed_m_per_min = max(1.0, float(getattr(settings, "saw_feed_m_per_min", 12.0) or 12.0))
+    result.saw_feed_m_per_min = max(1.0, float(settings.saw_feed_m_per_min))
+    result.reusable_offcuts = build_reusable_offcuts(result.sheet_layouts, settings.min_reusable_offcut_size)
+    _refresh_result_totals(result)
+    assert_sheet_result(result, sheet_parts, effective_kerf, settings.margin)
     _report_progress(progress_callback, 100, "Finalizuję wynik")
     return result
+
+
+def _refresh_result_totals(result: OptimizationResult) -> None:
+    """Derive saved statistics from the final real layouts and all cutting cards."""
+    used_area = math.fsum(layout.used_area for layout in result.sheet_layouts)
+    consumed_area = math.fsum(layout.consumed_area for layout in result.sheet_layouts)
+    result.waste = max(0.0, consumed_area - used_area)
+    result.utilization = used_area / consumed_area * 100.0 if consumed_area else 0.0
+    result.total_cost = math.fsum(layout.stock.price for layout in result.sheet_layouts)
+    result.total_reusable_offcut_area = math.fsum(layout.reusable_offcut_area for layout in result.sheet_layouts)
+    result.largest_reusable_offcut_area = max((layout.largest_reusable_offcut_area for layout in result.sheet_layouts), default=0.0)
+    result.fragmentation_score = math.fsum(layout.fragmentation_score for layout in result.sheet_layouts)
+    result.manufacturing_score = math.fsum(layout.manufacturing_score for layout in result.sheet_layouts)
+    result.offcut_quality = result.largest_reusable_offcut_area / result.total_reusable_offcut_area * 100 if result.total_reusable_offcut_area else 0.0
+    annotate_cut_times(result)
 
 
 def optimize_sheet_order(projects: list[Project], progress_callback: ProgressCallback | None = None) -> OptimizationResult:
@@ -794,10 +814,12 @@ def optimize_sheet_order(projects: list[Project], progress_callback: ProgressCal
         merged.missing_sheet_layouts.extend(sub.missing_sheet_layouts)
         merged.unplaced_sheet_parts.extend(sub.unplaced_sheet_parts)
         merged.messages.extend(sub.messages)
+        merged.reusable_offcuts.extend(build_reusable_offcuts(sub.sheet_layouts, project.settings.min_reusable_offcut_size))
     merged.saw_feed_m_per_min = max(
         1.0,
         float(getattr(groups[0].settings, "saw_feed_m_per_min", 12.0) or 12.0),
     )
+    _refresh_result_totals(merged)
     _report_progress(progress_callback, 100, "Wszystkie grupy są gotowe")
     return merged
 
@@ -820,6 +842,7 @@ class OptimizerWorker(QObject):
             if self._cancelled:
                 return
             if settings.job_type == "linear":
+                _validate_project_for_optimization(self.project)
                 self.progress.emit(35, "Liczenie rozkroju liniowego")
                 result: OptimizationResult = optimize_1d(
                     self.project.linear_stock,

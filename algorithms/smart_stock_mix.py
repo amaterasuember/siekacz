@@ -16,6 +16,7 @@ from dataclasses import dataclass, replace
 from algorithms.guillotine_technology import annotate_guillotine_result
 from algorithms.layout_scoring import annotate_result_metrics
 from algorithms.two_d_vertical_segmented import optimize_2d_vertical_segmented
+from core.grain import part_orientations
 from core.models import OptimizationResult, SheetLayout, SheetPart, SheetStock, materials_are_compatible
 
 
@@ -47,16 +48,8 @@ def _aggregate_parts(parts: list[SheetPart]) -> list[SheetPart]:
 
 
 def _fits(part: SheetPart, stock: SheetStock) -> bool:
-    direct = part.width <= stock.width + _EPS and part.height <= stock.height + _EPS
-    rotated = (
-        part.allow_rotation
-        and stock.allow_rotation
-        and str(part.grain_direction or "none") == "none"
-        and str(stock.grain_direction or "none") == "none"
-        and part.height <= stock.width + _EPS
-        and part.width <= stock.height + _EPS
-    )
-    return direct or rotated
+    return any(w <= stock.width + _EPS and h <= stock.height + _EPS
+               for w, h, _ in part_orientations(part, stock))
 
 
 @dataclass(frozen=True)

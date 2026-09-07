@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable
 
-from core.models import OptimizationResult, SheetLayout
+from core.models import OptimizationResult, PlacedSheetPart, SheetLayout
 
 Rect = tuple[float, float, float, float]
 EPS = 0.001
@@ -184,7 +184,7 @@ def estimate_cut_metrics(layout: SheetLayout, kerf: float = 0.0) -> tuple[float,
     return cut_length, cut_count
 
 
-def _stack_signature(parts: list[object]) -> tuple[tuple[float, float], ...]:
+def _stack_signature(parts: list[PlacedSheetPart]) -> tuple[tuple[float, float], ...]:
     return tuple((round(getattr(part, "width"), 3), round(getattr(part, "height"), 3)) for part in parts)
 
 
@@ -194,7 +194,7 @@ def manufacturing_score(layout: SheetLayout) -> float:
 
     score = 0.0
     segments = sorted(layout.vertical_segments, key=lambda segment: float(segment.get("x", 0.0)))
-    strip_parts: list[list[object]] = []
+    strip_parts: list[list[PlacedSheetPart]] = []
     strip_heights: list[float] = []
     strip_signatures: list[tuple[tuple[float, float], ...]] = []
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import ctypes
 import sys
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QCoreApplication, Qt
 from PySide6.QtWidgets import QAbstractButton, QApplication, QWidget
 
 
@@ -2315,7 +2315,42 @@ QTableWidget#partsTable::item:selected {
 """
 
 
-def apply_theme(app: QApplication, theme: str = "dark") -> None:
+def _refresh_v4_qss(light: bool) -> str:
+    background, surface, field = ("#f3f6fb", "#ffffff", "#f8fafd") if light else ("#0e1523", "#172132", "#111a2a")
+    text, muted, border = ("#1f3048", "#607089", "#dce3ee") if light else ("#e7eef9", "#a6b5cb", "#2b3a51")
+    return f"""
+    QMainWindow, QWidget#appRoot, QWidget#workspacePanel {{ background: {background}; color: {text}; }}
+    QWidget#sectionCard, QWidget#settingsCard, QWidget#summaryPanel {{
+        background: {surface}; border: 1px solid {border}; border-radius: 12px;
+    }}
+    QWidget#appHeader, QWidget#canvasStack {{ background: {background}; border: 1px solid {border}; border-radius: 10px; }}
+    QTableWidget, QTableWidget#partsTable {{ background: {surface}; alternate-background-color: {field};
+        color: {text}; border: 1px solid {border}; border-radius: 8px; gridline-color: {border}; }}
+    QHeaderView::section {{ background: {field}; color: {muted}; padding: 7px 6px;
+        border: 0; border-bottom: 1px solid {border}; font-weight: 600; }}
+    QTableWidget::item {{ padding: 4px 5px; border-bottom: 1px solid {border}; }}
+    QPushButton#toolbarButton, QPushButton#smallButton, QPushButton#navTab, QPushButton#themeToggle {{
+        background: {surface}; color: {text}; border: 1px solid {border}; border-radius: 8px; font-weight: 600;
+    }}
+    QPushButton#toolbarButton:hover, QPushButton#smallButton:hover, QPushButton#navTab:hover {{
+        background: {field}; border-color: #779fe5;
+    }}
+    QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit {{ background: {field}; color: {text}; border-color: {border}; }}
+    QComboBox QAbstractItemView, QMenu {{ background: {surface}; color: {text}; border: 1px solid {border}; }}
+    QMenu::item:selected {{ background: #3268bb; color: white; }}
+    QLabel#sectionTitle {{ color: {text}; font-weight: 600; }}
+    QLabel#previewMetricLabel {{ color: {muted}; font-size: 9pt; }}
+    QLabel#previewMetricValue {{ color: {text}; font-size: 15pt; font-weight: 600; }}
+    QToolTip {{ background: {surface}; color: {text}; border: 1px solid {border}; padding: 6px; }}
+    QScrollBar:horizontal {{ height: 8px; background: {field}; }}
+    QScrollBar:vertical {{ width: 8px; background: {field}; }}
+    QScrollBar::handle {{ background: #889ab3; border-radius: 4px; min-width: 20px; min-height: 20px; }}
+    """
+
+
+def apply_theme(app: QCoreApplication | None, theme: str = "dark") -> None:
+    if not isinstance(app, QApplication):
+        raise RuntimeError("Motyw wymaga uruchomionej aplikacji Qt.")
     normalized = "light" if theme == "light" else "dark"
     app.setProperty("theme", normalized)
     accent = "sport" if app.property("optimization_mode") == "sport" else "comfort"
@@ -2331,12 +2366,15 @@ def apply_theme(app: QApplication, theme: str = "dark") -> None:
         qss += UNIFIED_PREMIUM_QSS
         qss += REFERENCE_DARK_QSS
     qss += TABLE_ENTRY_INTERACTION_QSS
+    qss += _refresh_v4_qss(normalized == "light")
     app.setStyleSheet(qss)
     for widget in app.allWidgets():
         apply_button_cursors(widget)
 
 
-def apply_accent_mode(app: QApplication, mode: str = "comfort") -> None:
+def apply_accent_mode(app: QCoreApplication | None, mode: str = "comfort") -> None:
+    if not isinstance(app, QApplication):
+        raise RuntimeError("Motyw wymaga uruchomionej aplikacji Qt.")
     app.setProperty("optimization_mode", "sport" if mode == "sport" else "comfort")
     apply_theme(app, str(app.property("theme") or "dark"))
 

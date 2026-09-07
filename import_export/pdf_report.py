@@ -10,7 +10,6 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.platypus import (
     Flowable,
-    KeepTogether,
     PageBreak,
     Paragraph,
     SimpleDocTemplate,
@@ -136,8 +135,8 @@ class SheetFlowable(Flowable):
             return y, self.layout.stock.width - (x + w), h, w
         return x, y, w, h
 
-    def wrap(self, avail_w: float, avail_h: float) -> tuple[float, float]:
-        self.width = avail_w
+    def wrap(self, aW: float, aH: float) -> tuple[float, float]:
+        self.width = aW
         return self.width, self.height
 
     def draw(self) -> None:
@@ -332,7 +331,7 @@ class SheetFlowable(Flowable):
             for p in inside:
                 key = tuple(sorted((round(p.part.width), round(p.part.height))))
                 area[key] = area.get(key, 0.0) + p.width * p.height
-            dominant = max(area, key=area.get)
+            dominant = max(area, key=area.__getitem__)
             fine.append({"a": a, "b": b, "w": extent, "key": dominant})
 
         merge_gap = 8.0
@@ -468,7 +467,7 @@ class SheetFlowable(Flowable):
                 y1 = oy + board_h - y * scale
                 x2 = ox + (x + length) * scale
                 y2 = y1
-            kind = str(getattr(op, "kind", "cut"))
+            str(getattr(op, "kind", "cut"))
             color = colors.HexColor("#000000")
             canvas.setStrokeColor(color)
             canvas.setLineWidth(0.45)
@@ -524,7 +523,7 @@ def _front_matter(story, project: Project, result: OptimizationResult | None, co
         _cut_metrics_section(story, result, styles)
 
     if project.sheet_parts:
-        rows = [["Grubość", "Formatka", "Szer.", "Wys.", "Ilość", "Materiał", "Etykieta"]]
+        rows: list[list[object]] = [["Grubość", "Formatka", "Szer.", "Wys.", "Ilość", "Materiał", "Etykieta"]]
         rows.extend([[p.thickness, p.name, p.width, p.height, p.quantity, p.material, p.label]
                      for p in project.sheet_parts])
         story.append(Paragraph("Formatki płytowe", styles["heading"]))
@@ -597,7 +596,6 @@ def _append_drawings(story, groups, styles, missing: bool, block_w: float, block
         sheet_numbers = list(getattr(group, "display_sheet_indices", [])) or [getattr(layout, "display_sheet_index", sheet_no)]
         number_text = f"nr {format_sheet_number_ranges(sheet_numbers)}"
         thickness = float(getattr(layout.stock, "thickness", 0.0) or 0.0)
-        missing_text = "brakująca, " if missing else ""
         material = str(getattr(layout.stock, "material", "") or "Materiał").strip()
         caption = (
             f"{material} · gr. {thickness:g} mm — {number_text}  •  "

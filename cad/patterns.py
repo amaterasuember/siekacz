@@ -9,7 +9,7 @@ from typing import Any, TYPE_CHECKING
 from cad.constraints import ConstraintType, GeometryReference, SketchConstraint
 
 if TYPE_CHECKING:
-    from cad.model import CircleEntity, Sketch, SketchEntity
+    from cad.model import Sketch, SketchEntity
 
 
 class PatternType(str, Enum):

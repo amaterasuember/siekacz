@@ -4,6 +4,7 @@ from collections import defaultdict
 from typing import Any
 
 from algorithms.guillotine_slicing import build_slicing_tree
+from core.layout_validation import layout_geometry_errors
 from core.models import CutOperation, OptimizationResult, PlacedSheetPart, SheetLayout
 
 Rect = tuple[float, float, float, float]
@@ -95,31 +96,7 @@ def _find_segment_for_part(
 
 
 def _check_bounds_and_overlaps(layout: SheetLayout, kerf: float) -> list[str]:
-    errors: list[str] = []
-    for part in layout.parts:
-        if part.x < -EPS or part.y < -EPS:
-            errors.append(f"{part.part.name}: pozycja poza plyta")
-        if part.x + part.width > layout.stock.width + EPS or part.y + part.height > layout.stock.height + EPS:
-            errors.append(f"{part.part.name}: wystaje poza plyte")
-
-    for index, first in enumerate(layout.parts):
-        for second in layout.parts[index + 1 :]:
-            x_overlap = first.x < second.x + second.width - EPS and second.x < first.x + first.width - EPS
-            y_overlap = first.y < second.y + second.height - EPS and second.y < first.y + first.height - EPS
-            if x_overlap and y_overlap:
-                errors.append(f"{first.part.name} nachodzi na {second.part.name}")
-                continue
-            same_row = abs(first.y - second.y) < EPS and abs(first.height - second.height) < EPS
-            same_strip = abs(first.x - second.x) < EPS and abs(first.width - second.width) < EPS
-            if same_row:
-                gap = max(second.x - (first.x + first.width), first.x - (second.x + second.width))
-                if -EPS < gap < kerf - EPS:
-                    errors.append(f"Za maly rzaz poziomy: {first.part.name} / {second.part.name}")
-            if same_strip:
-                gap = max(second.y - (first.y + first.height), first.y - (second.y + second.height))
-                if -EPS < gap < kerf - EPS:
-                    errors.append(f"Za maly rzaz pionowy: {first.part.name} / {second.part.name}")
-    return errors
+    return layout_geometry_errors(layout, kerf)
 
 
 def _bottom_band_part_ids(parts: list[PlacedSheetPart], kerf: float) -> set[int]:

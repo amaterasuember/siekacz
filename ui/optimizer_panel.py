@@ -40,7 +40,7 @@ class OptimizerPanel(QWidget):
         self.kerf = QDoubleSpinBox()
         self.kerf.setRange(0, 50)
         self.kerf.setDecimals(2)
-        self.kerf.setValue(3.0)
+        self.kerf.setValue(5.0)
         self.margin = QDoubleSpinBox()
         self.margin.setRange(0, 200)
         self.margin.setDecimals(2)
@@ -141,7 +141,7 @@ class OptimizerPanel(QWidget):
     def show_result(self, result: OptimizationResult) -> None:
         missing_parts = len(result.unplaced_sheet_parts)
         missing_sheets = len(result.missing_sheet_layouts)
-        if missing_parts:
+        if missing_parts or missing_sheets:
             self.warning.setText(f"Brakuje {missing_sheets} dodatkowych płyt / {missing_parts} formatek. Zobacz czerwone płyty w zakładce Podgląd.")
             self.warning.show()
         else:

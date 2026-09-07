@@ -9,7 +9,7 @@ import shutil
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Sequence
 
 from openpyxl import load_workbook
 from openpyxl.styles import Alignment, Font, PatternFill
@@ -17,7 +17,7 @@ from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.workbook.defined_name import DefinedName
 from openpyxl.workbook.properties import CalcProperties
 
-from app.material_catalog import catalog_family_label
+from app.material_catalog import MaterialCatalogEntry, catalog_family_label
 
 
 PART_SHEET_ALIASES = {"formatki", "parts", "elementy", "detale"}
@@ -33,6 +33,7 @@ PART_COLUMNS: tuple[str, ...] = (
     "priority",
     "label",
     "notes",
+    "grain_direction",
 )
 STOCK_COLUMNS: tuple[str, ...] = (
     "material",
@@ -45,6 +46,7 @@ STOCK_COLUMNS: tuple[str, ...] = (
     "priority",
     "preferred_cut_axis",
     "allow_rotation",
+    "grain_direction",
 )
 
 _ALIASES: dict[str, set[str]] = {
@@ -65,6 +67,7 @@ _ALIASES: dict[str, set[str]] = {
         "cutaxis",
     },
     "allow_rotation": {"obrot", "obrotdozwolony", "obracaj", "allowrotation"},
+    "grain_direction": {"sloje", "kierunekslojow", "graindirection"},
     "label": {"etykieta", "nazwa", "label"},
     "notes": {"uwagi", "notatki", "notes"},
 }
@@ -160,6 +163,19 @@ def _sheet_format(value: object, *, row: int) -> tuple[float, float] | None:
     )
 
 
+def _grain(value: object, *, stock: bool = False) -> str:
+    normalized = _normalize(value)
+    if normalized in {"", "none", "brak", "bezprzypisania"}:
+        return "none"
+    if normalized in {"x", "y", "length", "width"}:
+        return normalized
+    if normalized == "wysokosc":
+        return "x" if stock else "y"
+    if normalized == "szerokosc":
+        return "y" if stock else "x"
+    raise ValueError("Słoje: wybierz wysokość, szerokość lub brak.")
+
+
 def _row_is_blank(row: dict[str, object]) -> bool:
     return not any(value not in (None, "") for value in row.values())
 
@@ -179,6 +195,7 @@ def _parse_part_rows(rows: list[dict[str, object]], start_row: int = 2) -> list[
                     "width": _number(row.get("width"), row=row_number, field="Szerokość"),
                     "quantity": _integer(row.get("quantity"), row=row_number, field="Ilość", minimum=1),
                     "allow_rotation": _boolean(row.get("allow_rotation"), True),
+                    **({"grain_direction": _grain(row.get("grain_direction"))} if "grain_direction" in row else {}),
                     "priority": _priority(row.get("priority"), row=row_number),
                     "label": str(row.get("label") or "").strip(),
                     "notes": str(row.get("notes") or "").strip(),
@@ -221,6 +238,7 @@ def _parse_stock_rows(rows: list[dict[str, object]], start_row: int = 2) -> list
                     "priority": _priority(row.get("priority"), row=row_number),
                     "preferred_cut_axis": _cut_axis(row.get("preferred_cut_axis")),
                     "allow_rotation": _boolean(row.get("allow_rotation"), True),
+                    **({"grain_direction": _grain(row.get("grain_direction"), stock=True)} if "grain_direction" in row else {}),
                 }
             )
         except ValueError as exc:
@@ -228,7 +246,7 @@ def _parse_stock_rows(rows: list[dict[str, object]], start_row: int = 2) -> list
     return parsed
 
 
-def _records_from_matrix(matrix: list[list[object]], columns: tuple[str, ...]) -> tuple[list[dict[str, object]], int]:
+def _records_from_matrix(matrix: Sequence[Sequence[object]], columns: tuple[str, ...]) -> tuple[list[dict[str, object]], int]:
     if not matrix:
         return [], 1
     header_index = -1
@@ -289,7 +307,7 @@ def read_batch_workbook(path: str | Path) -> BatchWorkbookData:
 def write_catalog_synced_template(
     template_path: str | Path,
     destination_path: str | Path,
-    catalog_entries: Iterable[object],
+    catalog_entries: Iterable[MaterialCatalogEntry],
 ) -> Path:
     """Create a fresh user workbook backed by the currently active catalogue.
 
@@ -395,15 +413,15 @@ def write_catalog_synced_template(
 
     last_catalog_row = max(2, len(ordered) + 1)
     for row_index in range(3, 203):
-        parts.cell(row_index, 10).value = (
+        parts.cell(row=row_index, column=10, value=(
             f'=IF(COUNTA(A{row_index}:I{row_index})=0,"",IF(COUNTIFS(Katalog!$A$2:$A${last_catalog_row},A{row_index},'
             f'Katalog!$B$2:$B${last_catalog_row},B{row_index})>0,"OK","BRAK MATERIAŁU / GRUBOŚCI"))'
-        )
-        stocks.cell(row_index, 9).value = (
+        ))
+        stocks.cell(row=row_index, column=9, value=(
             f'=IF(COUNTA(A{row_index}:H{row_index})=0,"",IF(COUNTIFS(Katalog!$A$2:$A${last_catalog_row},A{row_index},'
             f'Katalog!$B$2:$B${last_catalog_row},B{row_index},Katalog!$C$2:$C${last_catalog_row},C{row_index})>0,'
             '"OK","BRAK TAKIEJ PŁYTY W KATALOGU"))'
-        )
+        ))
 
     if workbook.calculation is None:
         workbook.calculation = CalcProperties(calcMode="auto")

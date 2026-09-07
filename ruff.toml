@@ -1,0 +1,6 @@
+# Correctness and unused-code checks for the desktop application.
+# Keep visual style refactoring separate from production fixes.
+target-version = "py311"
+include = ["app/**/*.py", "ui/**/*.py", "algorithms/**/*.py", "core/**/*.py", "workers/**/*.py", "import_export/**/*.py", "database/**/*.py", "cad/**/*.py", "main.py"]
+[lint]
+select = ["E9", "F"]

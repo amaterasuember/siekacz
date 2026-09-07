@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+from core.grain import part_orientations
 from core.models import OptimizationResult, PlacedSheetPart, SheetLayout, SheetPart, SheetStock, materials_are_compatible
 
 Rect = tuple[float, float, float, float]
@@ -33,10 +34,7 @@ def _expand_stock(stock: list[SheetStock]) -> list[SheetStock]:
 
 
 def _orientations(part: SheetPart, stock: SheetStock) -> list[tuple[float, float, bool]]:
-    options = [(part.width, part.height, False)]
-    if part.allow_rotation and stock.allow_rotation and part.grain_direction == "none":
-        options.append((part.height, part.width, True))
-    return options
+    return list(part_orientations(part, stock))
 
 
 def _fits(part: SheetPart, stock: SheetStock, rect: Rect, kerf: float) -> tuple[bool, float, float, bool]:
@@ -182,16 +180,8 @@ def optimize_2d_maxrects(
                 for i, item in enumerate(available_stock)
                 if materials_are_compatible(item.material, part.material)
                 and abs(item.thickness - part.thickness) < 0.001
-                and (
-                    (part.width <= item.width - margin * 2 and part.height <= item.height - margin * 2)
-                    or (
-                        part.allow_rotation
-                        and item.allow_rotation
-                        and part.grain_direction == "none"
-                        and part.height <= item.width - margin * 2
-                        and part.width <= item.height - margin * 2
-                    )
-                )
+                and any(w <= item.width - margin * 2 and h <= item.height - margin * 2
+                        for w, h, _ in _orientations(part, item))
             ),
             None,
         )

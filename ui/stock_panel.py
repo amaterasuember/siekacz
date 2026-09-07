@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.models import LinearStock, SheetStock
+from core.validation import safeNumber
 
 
 def _item(value: Any) -> QTableWidgetItem:
@@ -26,17 +27,13 @@ def _item(value: Any) -> QTableWidgetItem:
 
 
 def _float(value: str, default: float = 0.0) -> float:
-    try:
-        return float(str(value).replace(",", "."))
-    except ValueError:
-        return default
+    number = safeNumber(value)
+    return default if number is None else number
 
 
 def _int(value: str, default: int = 0) -> int:
-    try:
-        return int(float(str(value).replace(",", ".")))
-    except ValueError:
-        return default
+    number = safeNumber(value)
+    return int(number) if number is not None and number.is_integer() else default
 
 
 def _bool(value: str) -> bool:
@@ -75,18 +72,26 @@ class EditableTable(QTableWidget):
         super().keyPressEvent(event)
 
     def add_row(self, values: list[Any] | None = None) -> None:
+        sorting = self.isSortingEnabled()
         self.setSortingEnabled(False)
         row = self.rowCount()
         self.insertRow(row)
         for column, value in enumerate(values or self.defaults):
             self.setItem(row, column, _item(value))
-        self.setSortingEnabled(True)
+        self.setSortingEnabled(sorting)
         self.changed.emit()
 
     def duplicate_selected(self) -> None:
         rows = sorted({i.row() for i in self.selectedIndexes()})
-        for row in rows:
-            self.add_row([self.item(row, c).text() if self.item(row, c) else "" for c in range(self.columnCount())])
+        # Inserting a sorted row changes subsequent row indices. Snapshot the
+        # selection before inserting anything so every selected row is copied.
+        copies = [[self.cell_text(row, c) for c in range(self.columnCount())] for row in rows]
+        for values in copies:
+            self.add_row(values)
+
+    def cell_text(self, row: int, column: int) -> str:
+        cell = self.item(row, column)
+        return cell.text() if cell is not None else ""
 
     def remove_selected(self) -> None:
         for row in sorted({i.row() for i in self.selectedIndexes()}, reverse=True):
@@ -99,12 +104,17 @@ class EditableTable(QTableWidget):
             return
         start_row = self.currentRow() if self.currentRow() >= 0 else self.rowCount()
         start_col = self.currentColumn() if self.currentColumn() >= 0 else 0
-        for r, line in enumerate(text.splitlines()):
-            if start_row + r >= self.rowCount():
-                self.add_row()
-            for c, value in enumerate(line.split("\t")):
-                if start_col + c < self.columnCount():
-                    self.setItem(start_row + r, start_col + c, _item(value))
+        sorting = self.isSortingEnabled()
+        self.setSortingEnabled(False)
+        try:
+            for r, line in enumerate(text.splitlines()):
+                if start_row + r >= self.rowCount():
+                    self.add_row()
+                for c, value in enumerate(line.split("\t")):
+                    if start_col + c < self.columnCount():
+                        self.setItem(start_row + r, start_col + c, _item(value))
+        finally:
+            self.setSortingEnabled(sorting)
         self.changed.emit()
 
     def copy(self) -> None:
@@ -114,13 +124,13 @@ class EditableTable(QTableWidget):
             return
         lines = []
         for row in rows:
-            lines.append("\t".join(self.item(row, col).text() if self.item(row, col) else "" for col in cols))
+            lines.append("\t".join(self.cell_text(row, col) for col in cols))
         QApplication.clipboard().setText("\n".join(lines))
 
     def rows_as_dicts(self) -> list[dict[str, str]]:
         rows: list[dict[str, str]] = []
         for row in range(self.rowCount()):
-            data = {self.headers[col]: self.item(row, col).text() if self.item(row, col) else "" for col in range(self.columnCount())}
+            data = {self.headers[col]: self.cell_text(row, col) for col in range(self.columnCount())}
             if any(value.strip() for value in data.values()):
                 rows.append(data)
         return rows

@@ -18,6 +18,10 @@ echo Generuje manifest integralnosci...
 "%VENV_PY%" -m app.integrity
 if errorlevel 1 goto :failed
 
+rem Do not collect unrelated DLLs from tools such as Poppler on the host PATH.
+rem Qt uses the Windows ICU API; a foreign icuuc.dll can make the EXE fail at startup.
+set "PATH=%VENV_DIR%\Scripts;%SystemRoot%\System32;%SystemRoot%;%SystemRoot%\System32\Wbem"
+
 echo Probuje obfuskowac kod zrodlowy...
 if exist ".pyarmor_build" rmdir /s /q ".pyarmor_build"
 "%VENV_PY%" -m pyarmor gen --recursive --output .pyarmor_build main.py
@@ -38,6 +42,7 @@ if "!PYARMOR_RT!"=="" (
 echo Buduje wersje przenosna z obfuskacja...
 "%VENV_PY%" -m PyInstaller ^
     --noconfirm ^
+    --clean ^
     --windowed ^
     --name SIEKACZ9000 ^
     --icon "assets\app_icon.ico" ^
@@ -46,6 +51,10 @@ echo Buduje wersje przenosna z obfuskacja...
     --add-data "sample_data;sample_data" ^
     --add-data "LICENSE;." ^
     --collect-all ezdxf ^
+    --hidden-import app.simple_window ^
+    --hidden-import app.expiry ^
+    --hidden-import app.integrity ^
+    --hidden-import app.logging_setup ^
     --hidden-import app.technical_editor ^
     --hidden-import app.cad_viewer ^
     --hidden-import cad.inspection ^
@@ -64,6 +73,7 @@ goto :cleanup
 echo Buduje wersje przenosna bez obfuskacji...
 "%VENV_PY%" -m PyInstaller ^
     --noconfirm ^
+    --clean ^
     --windowed ^
     --name SIEKACZ9000 ^
     --icon "assets\app_icon.ico" ^
@@ -72,6 +82,10 @@ echo Buduje wersje przenosna bez obfuskacji...
     --add-data "sample_data;sample_data" ^
     --add-data "LICENSE;." ^
     --collect-all ezdxf ^
+    --hidden-import app.simple_window ^
+    --hidden-import app.expiry ^
+    --hidden-import app.integrity ^
+    --hidden-import app.logging_setup ^
     --hidden-import app.technical_editor ^
     --hidden-import app.cad_viewer ^
     --hidden-import cad.inspection ^
@@ -82,6 +96,9 @@ echo Buduje wersje przenosna bez obfuskacji...
 if errorlevel 1 goto :failed
 
 :cleanup
+echo Sprawdzam uruchomienie gotowego EXE...
+"%VENV_PY%" scripts\verify_windows_package.py "dist\portable\SIEKACZ9000\SIEKACZ9000.exe"
+if errorlevel 1 goto :failed
 if exist "build" rmdir /s /q "build"
 if exist "SIEKACZ9000.spec" del /q "SIEKACZ9000.spec"
 for %%D in (app ui algorithms core workers import_export database tests __pycache__) do (

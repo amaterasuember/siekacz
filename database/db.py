@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable
 
@@ -12,11 +14,16 @@ DB_PATH = APP_DIR / "cut_optimizer.db"
 _logger = logging.getLogger(__name__)
 
 
-def get_connection() -> sqlite3.Connection:
+@contextmanager
+def get_connection() -> Iterator[sqlite3.Connection]:
     APP_DIR.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(DB_PATH)
     connection.row_factory = sqlite3.Row
-    return connection
+    try:
+        with connection:
+            yield connection
+    finally:
+        connection.close()
 
 
 def _ensure_schema_version_table(connection: sqlite3.Connection) -> None:

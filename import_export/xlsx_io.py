@@ -14,7 +14,12 @@ _XLSX_SHEET_NAME_MAX = 31  # openpyxl / Excel hard limit
 def read_xlsx(path: str | Path, sheet_name: str | None = None) -> list[dict[str, Any]]:
     workbook = load_workbook(path, data_only=True)
     sheet = workbook[sheet_name] if sheet_name else workbook.active
-    rows = list(sheet.iter_rows(values_only=True))
+    try:
+        if sheet is None:
+            return []
+        rows = list(sheet.iter_rows(values_only=True))
+    finally:
+        workbook.close()
     if not rows:
         return []
     headers = [str(value).strip() if value is not None else "" for value in rows[0]]
@@ -29,7 +34,8 @@ def read_xlsx(path: str | Path, sheet_name: str | None = None) -> list[dict[str,
 def write_xlsx(path: str | Path, sheets: dict[str, list[dict[str, Any]]]) -> None:
     workbook = Workbook()
     default = workbook.active
-    workbook.remove(default)
+    if default is not None and sheets:
+        workbook.remove(default)
     for sheet_name, rows in sheets.items():
         if len(sheet_name) > _XLSX_SHEET_NAME_MAX:
             _logger.warning(
@@ -48,4 +54,3 @@ def write_xlsx(path: str | Path, sheets: dict[str, list[dict[str, Any]]]) -> Non
             width = max(len(str(cell.value or "")) for cell in column_cells) + 2
             sheet.column_dimensions[column_cells[0].column_letter].width = min(width, 40)
     workbook.save(path)
-

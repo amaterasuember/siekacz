@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 from contextlib import contextmanager
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from typing import Callable, Iterator, Protocol
 
 from cad.constraints import ConstraintType, GeometryReference, SketchConstraint
@@ -101,12 +102,16 @@ def _solve_and_apply(sketch: Sketch) -> None:
     solve_and_apply(sketch)
 
 
-class BaseCommand:
+class BaseCommand(ABC):
     description = "Operacja CAD"
 
     @property
     def changed_ids(self) -> set[str]:
         return set()
+
+    @abstractmethod
+    def execute(self, document: CadDocument) -> None:
+        """Apply the concrete command to the document."""
 
     def redo(self, document: CadDocument) -> None:
         self.execute(document)

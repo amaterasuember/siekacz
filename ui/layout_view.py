@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import TypedDict
 
-from PySide6.QtCore import QPropertyAnimation, QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import QPropertyAnimation, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QBrush, QFont, QFontMetrics, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap, QRadialGradient, QRegion
 from PySide6.QtWidgets import (
     QGraphicsRectItem,
@@ -14,6 +15,14 @@ from PySide6.QtWidgets import (
 
 from algorithms.layout_grouping import format_sheet_number_ranges, group_identical_layouts
 from core.models import LinearLayout, OptimizationResult, SheetLayout, SheetStock
+
+
+class _LegendData(TypedDict):
+    symbol: str
+    width: float
+    height: float
+    count: int
+    color: QColor
 
 
 THEMES = {
@@ -128,8 +137,8 @@ class LayoutView(QGraphicsView):
     def __init__(self) -> None:
         super().__init__()
         self.setObjectName("layoutView")
-        self.scene = QGraphicsScene(self)
-        self.setScene(self.scene)
+        self.graphics_scene = QGraphicsScene(self)
+        self.setScene(self.graphics_scene)
         self.theme = "dark"
         self.display_orientation = "horizontal"
         self.print_mode = False
@@ -200,7 +209,7 @@ class LayoutView(QGraphicsView):
             and event.button() == Qt.MouseButton.LeftButton
         ):
             scene_pos = self.mapToScene(event.pos())
-            for item in self.scene.items(scene_pos):
+            for item in self.graphics_scene.items(scene_pos):
                 if item.data(1) == "legend_marker":
                     key = item.data(2)
                     if key is not None:
@@ -432,11 +441,11 @@ class LayoutView(QGraphicsView):
         super().resizeEvent(event)
         self._apply_rounded_mask()
         if self._empty_state:
-            self.scene.clear()
+            self.graphics_scene.clear()
             self._draw_empty_state()
             self._fit_empty_state()
             return
-        if self._auto_fit and not self.scene.itemsBoundingRect().isEmpty():
+        if self._auto_fit and not self.graphics_scene.itemsBoundingRect().isEmpty():
             self.fit(reset_zoom=False)
 
     def fit(self, reset_zoom: bool = True) -> None:
@@ -447,7 +456,7 @@ class LayoutView(QGraphicsView):
                 self._auto_fit = True
             self._emit_zoom()
             return
-        bounds = self.scene.itemsBoundingRect().adjusted(-12, -12, 12, 12)
+        bounds = self.graphics_scene.itemsBoundingRect().adjusted(-12, -12, 12, 12)
         if not bounds.isEmpty():
             if reset_zoom:
                 self._manual_zoom = 1.0
@@ -471,7 +480,7 @@ class LayoutView(QGraphicsView):
 
     def _fit_empty_state(self) -> None:
         self.resetTransform()
-        self.centerOn(self.scene.sceneRect().center())
+        self.centerOn(self.graphics_scene.sceneRect().center())
 
     def _draw_empty_background_image(self, bounds: QRectF, relative_path: str, opacity: float = 1.0) -> bool:
         image = QPixmap(str(_resource_path(relative_path)))
@@ -497,7 +506,7 @@ class LayoutView(QGraphicsView):
         painter.setClipPath(clip)
         painter.drawPixmap(0, 0, cropped)
         painter.end()
-        item = self.scene.addPixmap(rounded)
+        item = self.graphics_scene.addPixmap(rounded)
         item.setOffset(bounds.x(), bounds.y())
         item.setOpacity(opacity)
         item.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
@@ -506,7 +515,7 @@ class LayoutView(QGraphicsView):
 
     def show_result(self, result: OptimizationResult | None) -> None:
         self._current_result = result
-        self.scene.clear()
+        self.graphics_scene.clear()
         self._manual_zoom = 1.0
         self._auto_fit = True
         self._part_color_map = {}
@@ -589,7 +598,7 @@ class LayoutView(QGraphicsView):
 
     def _draw_empty_state(self) -> None:
         bounds = self._empty_scene_bounds()
-        self.scene.setSceneRect(bounds)
+        self.graphics_scene.setSceneRect(bounds)
 
         if self.theme == "light" and not self.print_mode:
             if self._draw_empty_background_image(bounds, "assets/preview_empty_light.png", 1.0):
@@ -599,7 +608,7 @@ class LayoutView(QGraphicsView):
         base.setColorAt(0.0, QColor(16, 30, 50, 238))
         base.setColorAt(0.46, QColor(7, 15, 29, 248))
         base.setColorAt(1.0, QColor(3, 7, 18, 255))
-        background = self.scene.addRect(bounds, QPen(Qt.PenStyle.NoPen), QBrush(base))
+        background = self.graphics_scene.addRect(bounds, QPen(Qt.PenStyle.NoPen), QBrush(base))
         background.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
         background.setZValue(-30)
 
@@ -608,7 +617,7 @@ class LayoutView(QGraphicsView):
         glow.setColorAt(0.34, QColor(90, 167, 255, 20))
         glow.setColorAt(0.72, QColor(90, 167, 255, 4))
         glow.setColorAt(1.0, QColor(90, 167, 255, 0))
-        glow_item = self.scene.addRect(bounds, QPen(Qt.PenStyle.NoPen), QBrush(glow))
+        glow_item = self.graphics_scene.addRect(bounds, QPen(Qt.PenStyle.NoPen), QBrush(glow))
         glow_item.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
         glow_item.setZValue(-29)
 
@@ -625,7 +634,7 @@ class LayoutView(QGraphicsView):
             placeholder.setTextWidth(min(bounds.width() * 0.8, 720.0))
             placeholder.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
             placeholder.setZValue(-20)
-            self.scene.addItem(placeholder)
+            self.graphics_scene.addItem(placeholder)
             placeholder.setPos(
                 bounds.x() + (bounds.width() - placeholder.boundingRect().width()) / 2,
                 bounds.y() + (bounds.height() - placeholder.boundingRect().height()) / 2,
@@ -640,7 +649,7 @@ class LayoutView(QGraphicsView):
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation,
         )
-        item = self.scene.addPixmap(scaled)
+        item = self.graphics_scene.addPixmap(scaled)
         item.setOffset(
             bounds.x() + (bounds.width() - scaled.width()) / 2,
             bounds.y() + (bounds.height() - scaled.height()) / 2,
@@ -652,7 +661,7 @@ class LayoutView(QGraphicsView):
     def _rounded_rect(self, rect: QRectF, radius: float, fill: QColor | QBrush, pen: QPen | None = None):
         path = QPainterPath()
         path.addRoundedRect(rect, radius, radius)
-        item = self.scene.addPath(path, pen or QPen(Qt.PenStyle.NoPen), fill if isinstance(fill, QBrush) else QBrush(fill))
+        item = self.graphics_scene.addPath(path, pen or QPen(Qt.PenStyle.NoPen), fill if isinstance(fill, QBrush) else QBrush(fill))
         item.setZValue(-10)
         return item
 
@@ -667,7 +676,7 @@ class LayoutView(QGraphicsView):
         while x < rect.right() - 16.0:
             y = rect.top() + 16.0
             while y < rect.bottom() - 16.0:
-                dot = self.scene.addLine(x, y, x + 0.1, y + 0.1, dot_pen)
+                dot = self.graphics_scene.addLine(x, y, x + 0.1, y + 0.1, dot_pen)
                 dot.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
                 dot.setZValue(-8)
                 y += step
@@ -683,13 +692,18 @@ class LayoutView(QGraphicsView):
         bold: bool = False,
     ) -> QGraphicsTextItem:
         palette = self._palette()
-        item = self.scene.addText(text)
-        item.setDefaultTextColor(color or QColor(str(palette["text"])))
+        # Set the final font before shaping any text. addText(text) first
+        # lays out the default font, which invokes Windows font fallback for
+        # legend symbols and can stall the first asynchronous result render.
         font = QFont("Segoe UI")
         font.setPointSize(size)
         font.setBold(bold)
+        item = QGraphicsTextItem()
         item.setFont(font)
+        item.setDefaultTextColor(color or QColor(str(palette["text"])))
+        item.setPlainText(text)
         item.setPos(x, y)
+        self.graphics_scene.addItem(item)
         return item
 
     def _draw_right_label(self, text: str, right_x: float, y: float, size: int, color: QColor) -> None:
@@ -748,7 +762,7 @@ class LayoutView(QGraphicsView):
         label_color = QColor("#000000") if self.print_mode else color
 
         if rw < 5 or rh < 5:
-            dot = self.scene.addEllipse(
+            dot = self.graphics_scene.addEllipse(
                 rect.rect().center().x() - 1.5,
                 rect.rect().center().y() - 1.5,
                 3, 3,
@@ -763,7 +777,7 @@ class LayoutView(QGraphicsView):
         is_portrait = rh > rw
 
         dim_item = QGraphicsTextItem()
-        self.scene.addItem(dim_item)
+        self.graphics_scene.addItem(dim_item)
         dim_item.setParentItem(rect)
         dim_item.setDefaultTextColor(color)
         dim_item.document().setDocumentMargin(0)
@@ -823,7 +837,7 @@ class LayoutView(QGraphicsView):
         show_symbol = bool(symbol) and symbol_lane >= max(12.0, (rw if is_portrait else rh) * 0.30)
         if db.width() > 0 and db.height() > 0 and show_symbol:
             sym_item = QGraphicsTextItem()
-            self.scene.addItem(sym_item)
+            self.graphics_scene.addItem(sym_item)
             sym_item.setParentItem(rect)
             sym_item.setDefaultTextColor(color)
             sym_item.document().setDocumentMargin(0)
@@ -863,7 +877,7 @@ class LayoutView(QGraphicsView):
                 )
 
     def _legend_entries(self, layout: SheetLayout, missing: bool = False) -> list[tuple[str, tuple[float, float], int, QColor]]:
-        entries: dict[tuple[float, float], dict[str, object]] = {}
+        entries: dict[tuple[float, float], _LegendData] = {}
         for part in layout.parts:
             key = _dimension_key(part.part.width, part.part.height)
             if key not in entries:
@@ -903,7 +917,7 @@ class LayoutView(QGraphicsView):
             ly = item_y + row * row_h
             marker_color = QColor("#ffffff") if self.print_mode else color
             marker_pen = QPen(QColor("#000000") if self.print_mode else QColor(marker_color).darker(125), 0.9)
-            marker_rect = self.scene.addRect(QRectF(lx, ly + 3, 14, 14), marker_pen, QBrush(marker_color))
+            marker_rect = self.graphics_scene.addRect(QRectF(lx, ly + 3, 14, 14), marker_pen, QBrush(marker_color))
             marker_rect.setToolTip(
                 f"{dimensions[0]:.0f} × {dimensions[1]:.0f} mm — {count} szt.\nKliknij, aby podświetlić wszystkie wystąpienia."
             )
@@ -947,12 +961,12 @@ class LayoutView(QGraphicsView):
         arrow = 5.0
 
         # ── Width dimension: horizontal arrow above the plate ──
-        self.scene.addLine(sheet_rect.left(), top_y, sheet_rect.right(), top_y, pen)
-        self.scene.addLine(sheet_rect.left(), top_y, sheet_rect.left(), sheet_rect.top(), extension_pen)
-        self.scene.addLine(sheet_rect.right(), top_y, sheet_rect.right(), sheet_rect.top(), extension_pen)
+        self.graphics_scene.addLine(sheet_rect.left(), top_y, sheet_rect.right(), top_y, pen)
+        self.graphics_scene.addLine(sheet_rect.left(), top_y, sheet_rect.left(), sheet_rect.top(), extension_pen)
+        self.graphics_scene.addLine(sheet_rect.right(), top_y, sheet_rect.right(), sheet_rect.top(), extension_pen)
         for sx, direction in ((sheet_rect.left(), 1), (sheet_rect.right(), -1)):
-            self.scene.addLine(sx, top_y, sx + direction * arrow, top_y - arrow, pen)
-            self.scene.addLine(sx, top_y, sx + direction * arrow, top_y + arrow, pen)
+            self.graphics_scene.addLine(sx, top_y, sx + direction * arrow, top_y - arrow, pen)
+            self.graphics_scene.addLine(sx, top_y, sx + direction * arrow, top_y + arrow, pen)
 
         # Width label centred above the arrow; height shown as "H" suffix
         dim_label = f"{display_width:.0f} × {display_height:.0f} mm"
@@ -1028,7 +1042,7 @@ class LayoutView(QGraphicsView):
                     # can need different cuts and must remain separate.
                     key = (round(p.width), round(p.height))
                 area[key] = area.get(key, 0.0) + p.width * p.height
-            dominant = max(area, key=area.get)
+            dominant = max(area, key=area.__getitem__)
             fine.append({"a": a, "b": b, "w": extent, "key": dominant})
 
         # Merge adjacent strips of the same formatka into blocks.
@@ -1094,7 +1108,7 @@ class LayoutView(QGraphicsView):
             ring = QPen(Qt.PenStyle.NoPen)
             txt_color = QColor("#ffffff")
         ring.setCosmetic(True)
-        badge = self.scene.addEllipse(cx - radius, cy - radius, radius * 2, radius * 2, ring, QBrush(fill))
+        badge = self.graphics_scene.addEllipse(cx - radius, cy - radius, radius * 2, radius * 2, ring, QBrush(fill))
         badge.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
         badge.setZValue(50)
         badge.setToolTip(f"{count} identycznych płyt o tym samym rozkroju")
@@ -1117,7 +1131,7 @@ class LayoutView(QGraphicsView):
             fill = QColor("#fbbf24")  # amber — visible on dark UI and red parts
             ring = QPen(Qt.PenStyle.NoPen)
             txt_color = QColor("#1f2937")
-        badge = self.scene.addEllipse(cx - radius, cy - radius, radius * 2, radius * 2, ring, QBrush(fill))
+        badge = self.graphics_scene.addEllipse(cx - radius, cy - radius, radius * 2, radius * 2, ring, QBrush(fill))
         badge.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
         badge.setZValue(50)
         font_size = 5 if len(label) > 2 else 6
@@ -1170,14 +1184,14 @@ class LayoutView(QGraphicsView):
     def _bracket_h(self, x1, x2, base_y, count, uniform, label_text, order, txt, pen, inner, label_above) -> None:
         no = Qt.MouseButton.NoButton
         tick, inner_tick = 4.5, 2.5
-        self.scene.addLine(x1, base_y, x2, base_y, pen).setAcceptedMouseButtons(no)
+        self.graphics_scene.addLine(x1, base_y, x2, base_y, pen).setAcceptedMouseButtons(no)
         for sx in (x1, x2):
-            self.scene.addLine(sx, base_y - tick, sx, base_y + tick, pen).setAcceptedMouseButtons(no)
+            self.graphics_scene.addLine(sx, base_y - tick, sx, base_y + tick, pen).setAcceptedMouseButtons(no)
         if uniform and count > 1 and (x2 - x1) > 26:
             step = (x2 - x1) / count
             for k in range(1, count):
                 ix = x1 + step * k
-                self.scene.addLine(ix, base_y - inner_tick, ix, base_y + inner_tick, inner).setAcceptedMouseButtons(no)
+                self.graphics_scene.addLine(ix, base_y - inner_tick, ix, base_y + inner_tick, inner).setAcceptedMouseButtons(no)
         center_x = (x1 + x2) / 2
         label = self._draw_label(label_text, 0, 0, 6, txt, bold=True)
         lr = label.boundingRect()
@@ -1195,14 +1209,14 @@ class LayoutView(QGraphicsView):
     def _bracket_v(self, y1, y2, base_x, count, uniform, label_text, order, txt, pen, inner, label_left) -> None:
         no = Qt.MouseButton.NoButton
         tick, inner_tick = 4.5, 2.5
-        self.scene.addLine(base_x, y1, base_x, y2, pen).setAcceptedMouseButtons(no)
+        self.graphics_scene.addLine(base_x, y1, base_x, y2, pen).setAcceptedMouseButtons(no)
         for sy in (y1, y2):
-            self.scene.addLine(base_x - tick, sy, base_x + tick, sy, pen).setAcceptedMouseButtons(no)
+            self.graphics_scene.addLine(base_x - tick, sy, base_x + tick, sy, pen).setAcceptedMouseButtons(no)
         if uniform and count > 1 and (y2 - y1) > 26:
             step = (y2 - y1) / count
             for k in range(1, count):
                 iy = y1 + step * k
-                self.scene.addLine(base_x - inner_tick, iy, base_x + inner_tick, iy, inner).setAcceptedMouseButtons(no)
+                self.graphics_scene.addLine(base_x - inner_tick, iy, base_x + inner_tick, iy, inner).setAcceptedMouseButtons(no)
         center_y = (y1 + y2) / 2
         label = self._draw_label(label_text, 0, 0, 6, txt, bold=True)
         label.setRotation(-90)
@@ -1280,16 +1294,16 @@ class LayoutView(QGraphicsView):
             count = int(group["n"])
             uniform = bool(group["uniform"])
             center_y = (y_top + y_bot) / 2
-            line = self.scene.addLine(bracket_x, y_top, bracket_x, y_bot, pen)
+            line = self.graphics_scene.addLine(bracket_x, y_top, bracket_x, y_bot, pen)
             line.setAcceptedMouseButtons(no_btn)
             for sy in (y_top, y_bot):
-                t = self.scene.addLine(bracket_x - tick, sy, bracket_x + tick, sy, tick_pen)
+                t = self.graphics_scene.addLine(bracket_x - tick, sy, bracket_x + tick, sy, tick_pen)
                 t.setAcceptedMouseButtons(no_btn)
             if uniform and count > 1 and (y_bot - y_top) > 26:
                 step = (y_bot - y_top) / count
                 for k in range(1, count):
                     iy = y_top + step * k
-                    inner = self.scene.addLine(bracket_x - inner_tick, iy, bracket_x + inner_tick, iy, inner_pen)
+                    inner = self.graphics_scene.addLine(bracket_x - inner_tick, iy, bracket_x + inner_tick, iy, inner_pen)
                     inner.setAcceptedMouseButtons(no_btn)
             label_text = f"{count} × {group['w']:.0f} mm" if (uniform and count > 1) else f"{group['total']:.0f} mm"
             label = self._draw_label(label_text, 0, 0, 6, text_color, bold=True)
@@ -1303,10 +1317,10 @@ class LayoutView(QGraphicsView):
         total_x = sheet_rect.right() + 13
         y_top = sheet_rect.top() + (sw - layout.used_width) * scale
         y_bot = sheet_rect.top() + sw * scale
-        line = self.scene.addLine(total_x, y_top, total_x, y_bot, pen)
+        line = self.graphics_scene.addLine(total_x, y_top, total_x, y_bot, pen)
         line.setAcceptedMouseButtons(no_btn)
         for sy in (y_top, y_bot):
-            t = self.scene.addLine(total_x - tick, sy, total_x + tick, sy, tick_pen)
+            t = self.graphics_scene.addLine(total_x - tick, sy, total_x + tick, sy, tick_pen)
             t.setAcceptedMouseButtons(no_btn)
         total_label = self._draw_label(self._used_sheet_length_label(layout), 0, 0, 6, text_color, bold=True)
         total_bounds = total_label.boundingRect()
@@ -1326,16 +1340,16 @@ class LayoutView(QGraphicsView):
             count = int(group["n"])
             uniform = bool(group["uniform"])
             center_x = (x1 + x2) / 2
-            line = self.scene.addLine(x1, bottom_y, x2, bottom_y, pen)
+            line = self.graphics_scene.addLine(x1, bottom_y, x2, bottom_y, pen)
             line.setAcceptedMouseButtons(no_btn)
             for sx in (x1, x2):
-                t = self.scene.addLine(sx, bottom_y - tick, sx, bottom_y + tick, tick_pen)
+                t = self.graphics_scene.addLine(sx, bottom_y - tick, sx, bottom_y + tick, tick_pen)
                 t.setAcceptedMouseButtons(no_btn)
             if uniform and count > 1 and (x2 - x1) > 26:
                 step = (x2 - x1) / count
                 for k in range(1, count):
                     ix = x1 + step * k
-                    inner = self.scene.addLine(ix, bottom_y - inner_tick, ix, bottom_y + inner_tick, inner_pen)
+                    inner = self.graphics_scene.addLine(ix, bottom_y - inner_tick, ix, bottom_y + inner_tick, inner_pen)
                     inner.setAcceptedMouseButtons(no_btn)
             label_text = f"{count} × {group['w']:.0f} mm" if (uniform and count > 1) else f"{group['total']:.0f} mm"
             label = self._draw_label(label_text, 0, 0, 6, text_color, bold=True)
@@ -1347,10 +1361,10 @@ class LayoutView(QGraphicsView):
             total_y = bottom_y + 20
             x1 = sheet_rect.left() + min(group["start"] for group in groups) * scale
             x2 = sheet_rect.left() + max(group["end"] for group in groups) * scale
-            line = self.scene.addLine(x1, total_y, x2, total_y, pen)
+            line = self.graphics_scene.addLine(x1, total_y, x2, total_y, pen)
             line.setAcceptedMouseButtons(no_btn)
             for sx in (x1, x2):
-                t = self.scene.addLine(sx, total_y - tick, sx, total_y + tick, tick_pen)
+                t = self.graphics_scene.addLine(sx, total_y - tick, sx, total_y + tick, tick_pen)
                 t.setAcceptedMouseButtons(no_btn)
             total_label = self._draw_label(self._total_cut_span_label(groups), 0, 0, 6, text_color, bold=True)
             total_bounds = total_label.boundingRect()
@@ -1403,10 +1417,10 @@ class LayoutView(QGraphicsView):
             uniform = bool(group["uniform"])
             center_x = (x1 + x2) / 2
 
-            line = self.scene.addLine(x1, top_y, x2, top_y, pen)
+            line = self.graphics_scene.addLine(x1, top_y, x2, top_y, pen)
             line.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
             for sx in (x1, x2):
-                tick_line = self.scene.addLine(sx, top_y - tick, sx, top_y + tick, tick_pen)
+                tick_line = self.graphics_scene.addLine(sx, top_y - tick, sx, top_y + tick, tick_pen)
                 tick_line.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
 
             # Internal rip marks where repeated identical strips meet.
@@ -1414,7 +1428,7 @@ class LayoutView(QGraphicsView):
                 step = (x2 - x1) / count
                 for k in range(1, count):
                     ix = x1 + step * k
-                    inner = self.scene.addLine(ix, top_y - inner_tick, ix, top_y + inner_tick, inner_pen)
+                    inner = self.graphics_scene.addLine(ix, top_y - inner_tick, ix, top_y + inner_tick, inner_pen)
                     inner.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
 
             if uniform and count > 1:
@@ -1430,10 +1444,10 @@ class LayoutView(QGraphicsView):
         bottom_y = sheet_rect.bottom() + 13
         x1 = sheet_rect.left()
         x2 = sheet_rect.left() + layout.used_width * scale
-        total_line = self.scene.addLine(x1, bottom_y, x2, bottom_y, pen)
+        total_line = self.graphics_scene.addLine(x1, bottom_y, x2, bottom_y, pen)
         total_line.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
         for sx in (x1, x2):
-            tick_line = self.scene.addLine(sx, bottom_y - tick, sx, bottom_y + tick, tick_pen)
+            tick_line = self.graphics_scene.addLine(sx, bottom_y - tick, sx, bottom_y + tick, tick_pen)
             tick_line.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
         total_label = self._draw_label(self._used_sheet_length_label(layout), 0, 0, 6, text_color, bold=True)
         total_bounds = total_label.boundingRect()
@@ -1489,17 +1503,17 @@ class LayoutView(QGraphicsView):
             uniform = bool(group["uniform"])
             center_y = (y1 + y2) / 2
 
-            line = self.scene.addLine(left_x, y1, left_x, y2, pen)
+            line = self.graphics_scene.addLine(left_x, y1, left_x, y2, pen)
             line.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
             for sy in (y1, y2):
-                tick_line = self.scene.addLine(left_x - tick, sy, left_x + tick, sy, tick_pen)
+                tick_line = self.graphics_scene.addLine(left_x - tick, sy, left_x + tick, sy, tick_pen)
                 tick_line.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
 
             if uniform and count > 1 and (y2 - y1) > 26:
                 step = (y2 - y1) / count
                 for k in range(1, count):
                     iy = y1 + step * k
-                    inner = self.scene.addLine(left_x - inner_tick, iy, left_x + inner_tick, iy, inner_pen)
+                    inner = self.graphics_scene.addLine(left_x - inner_tick, iy, left_x + inner_tick, iy, inner_pen)
                     inner.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
 
             if uniform and count > 1:
@@ -1515,10 +1529,10 @@ class LayoutView(QGraphicsView):
             total_x = left_x - 19
             y1 = sheet_rect.top() + min(group["start"] for group in groups) * scale
             y2 = sheet_rect.top() + max(group["end"] for group in groups) * scale
-            total_line = self.scene.addLine(total_x, y1, total_x, y2, pen)
+            total_line = self.graphics_scene.addLine(total_x, y1, total_x, y2, pen)
             total_line.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
             for sy in (y1, y2):
-                tick_line = self.scene.addLine(total_x - tick, sy, total_x + tick, sy, tick_pen)
+                tick_line = self.graphics_scene.addLine(total_x - tick, sy, total_x + tick, sy, tick_pen)
                 tick_line.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
             total_label = self._draw_label(self._total_cut_span_label(groups), 0, 0, 6, text_color, bold=True)
             total_bounds = total_label.boundingRect()
@@ -1645,7 +1659,7 @@ class LayoutView(QGraphicsView):
                 color = QColor("#c084fc")
             pen = QPen(color, 1.1, Qt.PenStyle.DashLine if kind == "trim" else Qt.PenStyle.SolidLine)
             pen.setCosmetic(True)
-            line = self.scene.addLine(x1, y1, x2, y2, pen)
+            line = self.graphics_scene.addLine(x1, y1, x2, y2, pen)
             line.setZValue(45)
             line.setToolTip(str(getattr(op, "description", "")) or f"Cięcie {getattr(op, 'step', '')}")
             line.setAcceptedMouseButtons(no_btn)
@@ -1675,7 +1689,6 @@ class LayoutView(QGraphicsView):
         # operator reads one drawing N times instead of scrolling N copies.
         for group in group_identical_layouts(layouts):
             layout = group.representative
-            group_count = group.count
             group_label = (getattr(layout, "group_label", "") or "").strip()
             sheet_numbers = list(getattr(group, "display_sheet_indices", [])) or [getattr(layout, "display_sheet_index", layout.sheet_index)]
             number_text = format_sheet_number_ranges(sheet_numbers)
@@ -1832,10 +1845,10 @@ class LayoutView(QGraphicsView):
                     if ow <= 0.001 or oh <= 0.001:
                         continue
                 dx, dy, dw, dh = self._map_rect_to_display(layout, (ox, oy, ow, oh), display_rotated)
-                offcut = self.scene.addRect(
+                offcut = self.graphics_scene.addRect(
                     QRectF(sheet_x + dx * scale, sheet_y + dy * scale, dw * scale, dh * scale),
                     QPen(QColor(str(palette["offcut_pen"])), 0.8, Qt.PenStyle.DashLine),
-                    palette["offcut"],
+                    QBrush(palette["offcut"] if isinstance(palette["offcut"], QColor) else QColor(str(palette["offcut"]))),
                 )
                 offcut.setToolTip(f"Odpad {ow:.0f} x {oh:.0f} mm")
                 offcut.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
@@ -1868,12 +1881,12 @@ class LayoutView(QGraphicsView):
                     continue
                 if display_rotated:
                     line_y = sheet_y + (layout.stock.width - boundary) * scale
-                    line = self.scene.addLine(sheet_x, line_y, sheet_x + sheet_w, line_y, segment_pen)
+                    line = self.graphics_scene.addLine(sheet_x, line_y, sheet_x + sheet_w, line_y, segment_pen)
                     line.setToolTip(f"Granica pionowego segmentu: x={boundary:.0f} mm (widok obrócony)")
                     line.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
                 else:
                     line_x = sheet_x + boundary * scale
-                    line = self.scene.addLine(line_x, sheet_y, line_x, sheet_y + sheet_h, segment_pen)
+                    line = self.graphics_scene.addLine(line_x, sheet_y, line_x, sheet_y + sheet_h, segment_pen)
                     line.setToolTip(f"Granica pionowego segmentu: x={boundary:.0f} mm")
                     line.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
 
@@ -1898,7 +1911,7 @@ class LayoutView(QGraphicsView):
                 bonus_note = "\n⊕ Bonus — cięcie z odpadu dodatkowego materiału" if is_bonus else ""
                 rect.setToolTip(f"{part.part.name}\n{part.width:.0f} x {part.height:.0f} mm\nx={part.x:.0f}, y={part.y:.0f}{rotation_note}{bonus_note}")
                 rect.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
-                self.scene.addItem(rect)
+                self.graphics_scene.addItem(rect)
                 # T1-4: register so legend clicks can highlight all matching parts.
                 key = _dimension_key(part.part.width, part.part.height)
                 self._part_rects_by_key.setdefault(key, []).append(rect)
@@ -1907,6 +1920,26 @@ class LayoutView(QGraphicsView):
                 symbol = self._part_symbol(part.part.width, part.part.height)
                 dimension_text = f"{part.part.width:.0f} × {part.part.height:.0f}"
                 self._draw_part_label(rect, symbol, dimension_text, self._part_text_color(part.part.width, part.part.height, missing))
+                if part.part.grain_direction in {"x", "y"}:
+                    horizontal = (layout.stock.grain_direction == "x") != display_rotated
+                    # A small double-ended arrow follows the physical grain even
+                    # when the whole board is rotated only for the preview.
+                    span = min((rect_w if horizontal else rect_h) * 0.38, 34.0)
+                    if span >= 10 and min(rect_w, rect_h) >= 18:
+                        cx, cy = rect_x + rect_w * 0.5, rect_y + 8
+                        if not horizontal:
+                            cx, cy = rect_x + 8, rect_y + rect_h * 0.5
+                        pen = QPen(QColor("#243348"), 1.2)
+                        dx, dy = (span / 2, 0) if horizontal else (0, span / 2)
+                        self.graphics_scene.addLine(cx - dx, cy - dy, cx + dx, cy + dy, pen)
+                        for sign in (-1, 1):
+                            ex, ey = cx + sign * dx, cy + sign * dy
+                            for wing in (-1, 1):
+                                wx = ex - sign * 3 if horizontal else ex + wing * 3
+                                wy = ey + wing * 3 if horizontal else ey - sign * 3
+                                self.graphics_scene.addLine(ex, ey, wx, wy, pen)
+                    rect.setToolTip(rect.toolTip() + "\n★ Wzdłuż słojów oznaczonego boku płyty")
+
 
             self._draw_cut_operations_overlay(layout, sheet_rect, scale, display_rotated)
             self._draw_legend(legend_entries, x + 18, sheet_y + sheet_h + dimension_bottom_margin + 12, card_w - 36)
@@ -1922,11 +1955,11 @@ class LayoutView(QGraphicsView):
             x = 50.0
             length = layout.stock.length * scale
             self._draw_label(f"Pręt {layout.bar_index} - {layout.stock.material} {layout.utilization:.1f}% odpad {layout.leftover:.0f} mm", x, y - 28, 10)
-            self.scene.addRect(QRectF(x, y, length, 34), QPen(QColor(str(palette["sheet_pen"])), 1.3), QColor(str(palette["sheet"])))
+            self.graphics_scene.addRect(QRectF(x, y, length, 34), QPen(QColor(str(palette["sheet_pen"])), 1.3), QColor(str(palette["sheet"])))
             for placement in layout.placements:
                 rect_x = x + placement.start * scale
                 rect_w = placement.length * scale
-                rect = self.scene.addRect(QRectF(rect_x, y, rect_w, 34), QPen(QColor("#bbf7d0"), 0.8), QColor("#22c55e"))
+                rect = self.graphics_scene.addRect(QRectF(rect_x, y, rect_w, 34), QPen(QColor("#bbf7d0"), 0.8), QColor("#22c55e"))
                 rect.setToolTip(f"{placement.part.name}\nstart {placement.start:.0f} mm\nlength {placement.length:.0f} mm")
                 rect.setFlag(QGraphicsRectItem.GraphicsItemFlag.ItemIsSelectable)
                 self._draw_label(placement.part.label or placement.part.name, rect_x + 4, y + 5, 7)

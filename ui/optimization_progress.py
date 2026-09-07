@@ -652,11 +652,12 @@ class OptimizationProgressOverlay(QWidget):
             if requested_animation in {"economy", "quality"}
             else "economy"
         )
-        if project and not getattr(project.settings, "multi_core", True):
+        if project and not getattr(getattr(project, "settings", None), "multi_core", True):
             self._msg_label = "Uwaga: Wielowątkowość jest wyłączona. Proces obliczania się wydłuży."
             # Set the phase slightly forward so it holds longer before fading out
             self._msg_phase = 0.0
         
+        self._timer.setInterval(33 if self._animation_mode == "economy" else 16)
         self.state.visible = True
         self.state.globalProgressPercent = 0
         self._cancel_button.setDisabled(False)
@@ -724,8 +725,6 @@ class OptimizationProgressOverlay(QWidget):
         self._msg_label = self._messages[self._msg_index]
 
     def _tick(self) -> None:
-        elapsed_ms = self._elapsed.elapsed() if self._elapsed.isValid() else 0
-        elapsed_s = elapsed_ms / 1000.0
 
         # Indeterminate bar: cycles 0→1 in ~2.4 s
 
@@ -751,316 +750,51 @@ class OptimizationProgressOverlay(QWidget):
         return 1.0
 
     def _paint_economy_loader(self, painter: QPainter, bounds: QRectF, elapsed_s: float, fade_in: float, is_light: bool) -> None:
-        """A restrained Windows-style boot loader made from orbiting dots."""
-        center = QPointF(bounds.center().x(), bounds.height() * 0.36)
-        orbit = max(34.0, min(bounds.width(), bounds.height()) * 0.078)
-        linear_cycle = (elapsed_s * 0.58) % 1.0
-        blue = QColor(99, 177, 255) if is_light else QColor(103, 190, 255)
-
-        # Five dots follow the same circle with a delayed, accelerating tail.
-        # The stagger is what gives the familiar Windows boot rhythm.
-        for index in range(5):
-            raw_position = (linear_cycle - index * 0.14) % 1.0
-            # Apply the wave after each dot's delay. This expands the gaps at
-            # the fast front and compresses the slower tail behind it.
-            position = (raw_position - 0.06 * math.sin(raw_position * math.tau)) % 1.0
-            angle = -math.pi / 2 + position * math.tau
-            ease = _ease_out_quint(position)
-            velocity = (1.0 - math.cos(raw_position * math.tau)) / 2.0
-            fast = max(0.0, min(1.0, (velocity - 0.58) / 0.42))
-            fast = fast * fast * (3.0 - 2.0 * fast)
-            wave = 0.5 + 0.5 * math.sin(position * math.tau - 0.7)
-            x = center.x() + math.cos(angle) * orbit
-            y = center.y() + math.sin(angle) * orbit
-            radius = 3.1 + ease * 1.45 + wave * 0.35
-            stretch = 1.0 + fast * 0.72
-            thickness = 1.0 - fast * 0.18
-            alpha = int(230 * fade_in)
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QColor(blue.red(), blue.green(), blue.blue(), alpha))
-            painter.save()
-            painter.translate(x, y)
-            painter.rotate(math.degrees(angle + math.pi / 2.0))
-            painter.drawEllipse(QRectF(-radius * stretch, -radius * thickness, radius * stretch * 2.0, radius * thickness * 2.0))
-            painter.restore()
-
-    def _paint_economy_loader_metaball_legacy(self, painter: QPainter, bounds: QRectF, elapsed_s: float, fade_in: float, is_light: bool) -> None:
-        """Two glowing metaball pairs with a slow, liquid bloom loop."""
-        if not self._metaball_bloom.isNull():
-            source = QRectF(
-                self._metaball_bloom.width() * 0.14,
-                self._metaball_bloom.height() * 0.10,
-                self._metaball_bloom.width() * 0.72,
-                self._metaball_bloom.height() * 0.72,
-            )
-            target_size = min(bounds.width() * 0.47, bounds.height() * 0.56)
-            breath = 1.0 + 0.025 * math.sin(elapsed_s * math.tau / 4.8)
-            rotation = 2.2 * math.sin(elapsed_s * math.tau / 8.0)
-            center = QPointF(bounds.center().x(), bounds.height() * 0.34)
-            painter.save()
-            painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Screen)
-            painter.setOpacity((0.96 if not is_light else 0.78) * fade_in)
-            painter.translate(center)
-            painter.rotate(rotation)
-            draw_size = target_size * breath
-            target = QRectF(-draw_size / 2.0, -draw_size / 2.0, draw_size, draw_size)
-            painter.drawPixmap(target, self._metaball_bloom, source)
-            painter.setOpacity((0.42 if not is_light else 0.24) * fade_in)
-            bloom_target = target.adjusted(-3.0, -3.0, 3.0, 3.0)
-            painter.drawPixmap(bloom_target, self._metaball_bloom, source)
-            painter.restore()
-            return
-
-        scene = QRectF(
-            bounds.center().x() - min(bounds.width(), bounds.height()) * 0.27,
-            bounds.height() * 0.12,
-            min(bounds.width(), bounds.height()) * 0.54,
-            min(bounds.width(), bounds.height()) * 0.46,
-        )
-        center = scene.center()
-        radius = max(36.0, scene.width() * 0.115)
-        phase = elapsed_s * 0.58
-
-        cyan = QColor(50, 217, 255) if not is_light else QColor(24, 132, 222)
-        violet = QColor(141, 92, 255) if not is_light else QColor(99, 76, 218)
-
-        def blob_path_legacy(first: QPointF, second: QPointF, first_radius: float, second_radius: float) -> QPainterPath:
-            dx = second.x() - first.x()
-            dy = second.y() - first.y()
-            distance = max(1.0, math.hypot(dx, dy))
-            vx, vy = dx / distance, dy / distance
-            nx, ny = -vy, vx
-            path = QPainterPath()
-            path.moveTo(first.x() + nx * first_radius, first.y() + ny * first_radius)
-            path.cubicTo(
-                first.x() + vx * distance * 0.42 + nx * first_radius * 0.72,
-                first.y() + vy * distance * 0.42 + ny * first_radius * 0.72,
-                second.x() - vx * distance * 0.42 + nx * second_radius * 0.72,
-                second.y() - vy * distance * 0.42 + ny * second_radius * 0.72,
-                second.x() + nx * second_radius,
-                second.y() + ny * second_radius,
-            )
-            path.cubicTo(
-                second.x() + vx * second_radius * 0.92 + nx * second_radius * 0.34,
-                second.y() + vy * second_radius * 0.92 + ny * second_radius * 0.34,
-                second.x() + vx * second_radius * 0.92 - nx * second_radius * 0.34,
-                second.y() + vy * second_radius * 0.92 - ny * second_radius * 0.34,
-                second.x() - nx * second_radius,
-                second.y() - ny * second_radius,
-            )
-            path.cubicTo(
-                second.x() - vx * distance * 0.42 - nx * second_radius * 0.72,
-                second.y() - vy * distance * 0.42 - ny * second_radius * 0.72,
-                first.x() + vx * distance * 0.42 - nx * first_radius * 0.72,
-                first.y() + vy * distance * 0.42 - ny * first_radius * 0.72,
-                first.x() - nx * first_radius,
-                first.y() - ny * first_radius,
-            )
-            path.cubicTo(
-                first.x() - vx * first_radius * 0.92 - nx * first_radius * 0.34,
-                first.y() - vy * first_radius * 0.92 - ny * first_radius * 0.34,
-                first.x() - vx * first_radius * 0.92 + nx * first_radius * 0.34,
-                first.y() - vy * first_radius * 0.92 + ny * first_radius * 0.34,
-                first.x() + nx * first_radius,
-                first.y() + ny * first_radius,
-            )
-            return path
-
-        def blob_path(first: QPointF, second: QPointF, first_radius: float, second_radius: float) -> QPainterPath:
-            """Union two rounded lobes and a narrow bridge into one smooth silhouette."""
-            dx = second.x() - first.x()
-            dy = second.y() - first.y()
-            distance = max(1.0, math.hypot(dx, dy))
-            nx, ny = -dy / distance, dx / distance
-            neck = min(first_radius, second_radius) * 0.72
-            bridge = QPainterPath()
-            bridge.moveTo(first.x() + nx * neck, first.y() + ny * neck)
-            bridge.lineTo(second.x() + nx * neck, second.y() + ny * neck)
-            bridge.lineTo(second.x() - nx * neck, second.y() - ny * neck)
-            bridge.lineTo(first.x() - nx * neck, first.y() - ny * neck)
-            bridge.closeSubpath()
-            lobes = QPainterPath()
-            lobes.addEllipse(first, first_radius, first_radius)
-            lobes.addEllipse(second, second_radius, second_radius)
-            return lobes.united(bridge).simplified()
-
-        def draw_pair(pair_phase: float, pair_scale: float, offset_x: float, offset_y: float, reverse: bool) -> None:
-            angle = pair_phase + (math.pi if reverse else 0.0)
-            wobble = math.sin(elapsed_s * 1.3 + pair_phase) * radius * 0.18
-            pair_center = QPointF(
-                center.x() + offset_x + math.cos(angle) * radius * 0.10,
-                center.y() + offset_y + math.sin(angle * 1.2) * radius * 0.08,
-            )
-            direction = angle + (0.92 if reverse else -0.92)
-            separation = radius * (1.30 + 0.10 * math.sin(elapsed_s * 1.05 + pair_phase))
-            first = QPointF(
-                pair_center.x() - math.cos(direction) * separation * 0.5,
-                pair_center.y() - math.sin(direction) * separation * 0.5 + wobble,
-            )
-            second = QPointF(
-                pair_center.x() + math.cos(direction) * separation * 0.5,
-                pair_center.y() + math.sin(direction) * separation * 0.5 - wobble,
-            )
-            first_radius = radius * pair_scale * (0.95 + 0.10 * math.sin(elapsed_s * 1.16 + pair_phase))
-            second_radius = radius * pair_scale * (1.02 + 0.10 * math.cos(elapsed_s * 0.97 + pair_phase))
-            path = blob_path(first, second, first_radius, second_radius)
-
-            glow = QRadialGradient(pair_center, radius * 3.2)
-            glow.setColorAt(0.0, QColor(cyan.red(), cyan.green(), cyan.blue(), int(74 * fade_in)))
-            glow.setColorAt(0.56, QColor(violet.red(), violet.green(), violet.blue(), int(24 * fade_in)))
-            glow.setColorAt(1.0, QColor(0, 0, 0, 0))
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(glow)
-            painter.drawEllipse(pair_center, radius * 3.0, radius * 3.0)
-
-            gradient = QLinearGradient(first, second)
-            gradient.setColorAt(0.0, QColor(violet.red(), violet.green(), violet.blue(), int(238 * fade_in)))
-            gradient.setColorAt(0.42, QColor(111, 143, 255, int(250 * fade_in)))
-            gradient.setColorAt(1.0, QColor(cyan.red(), cyan.green(), cyan.blue(), int(240 * fade_in)))
-            painter.setBrush(gradient)
-            painter.setPen(QColor(194, 244, 255, int(180 * fade_in)))
-            painter.drawPath(path)
-
-            highlight = QRadialGradient(second, second_radius * 1.10)
-            highlight.setColorAt(0.0, QColor(255, 255, 255, int(105 * fade_in)))
-            highlight.setColorAt(1.0, QColor(255, 255, 255, 0))
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(highlight)
-            painter.drawEllipse(second, second_radius * 1.10, second_radius * 1.10)
-
-        draw_pair(phase, 0.96, -scene.width() * 0.12, -scene.height() * 0.16, False)
-        draw_pair(phase + 1.62, 0.92, scene.width() * 0.12, scene.height() * 0.16, True)
-
-    def _paint_economy_loader_constellation(self, painter: QPainter, bounds: QRectF, elapsed_s: float, fade_in: float, is_light: bool) -> None:
-        """A light, looping field of luminous nodes that merge and split."""
-        center = QPointF(bounds.center().x(), bounds.height() * 0.36)
-        orbit = max(112.0, min(bounds.width(), bounds.height()) * 0.26)
-        palette = (
-            QColor(68, 190, 255), QColor(72, 232, 190), QColor(178, 114, 255),
-            QColor(203, 244, 112), QColor(255, 108, 212), QColor(82, 126, 255),
-        )
-        if is_light:
-            palette = tuple(
-                QColor(int(color.red() * 0.70), int(color.green() * 0.70), int(color.blue() * 0.78))
-                for color in palette
-            )
-
-        loop = (elapsed_s % 6.4) / 6.4
-        collision = math.exp(-((loop - 0.50) / 0.085) ** 2)
-
-        # Soft Bezier trails keep the field organic while remaining cheap to draw.
-        for index, color in enumerate(palette):
-            phase = index * math.tau / len(palette) + elapsed_s * (0.22 + (index % 2) * 0.025)
-            path = QPainterPath()
-            path.moveTo(
-                center.x() + math.cos(phase) * orbit * 0.86,
-                center.y() + math.sin(phase * 1.32) * orbit * 0.56,
-            )
-            path.cubicTo(
-                center.x() + math.sin(phase + 0.7) * orbit * 0.26,
-                center.y() - math.cos(phase * 1.1) * orbit * 0.92,
-                center.x() - math.cos(phase * 0.8) * orbit * 0.78,
-                center.y() + math.sin(phase + 1.4) * orbit * 0.76,
-                center.x() + math.cos(phase + 2.3) * orbit * 0.88,
-                center.y() + math.sin(phase * 1.26 + 1.2) * orbit * 0.56,
-            )
-            painter.setPen(QColor(color.red(), color.green(), color.blue(), int(44 * fade_in)))
+        """A bounded, vector solar system: no images, particles or extra timers."""
+        center = QPointF(bounds.center().x(), bounds.height() * 0.35)
+        radius = min(bounds.width() * 0.35, bounds.height() * 0.25, 210.0)
+        painter.save()
+        painter.setOpacity(fade_in)
+        painter.translate(center)
+        painter.setPen(Qt.PenStyle.NoPen)
+        glow = QRadialGradient(QPointF(0, 0), radius)
+        glow.setColorAt(0, QColor(115, 94, 242, 55 if is_light else 80))
+        glow.setColorAt(0.6, QColor(65, 138, 225, 18))
+        glow.setColorAt(1, QColor(65, 138, 225, 0))
+        painter.setBrush(glow)
+        painter.drawEllipse(QPointF(0, 0), radius, radius * 0.78)
+        for i in range(84):
+            angle = i * 2.399963 + elapsed_s * 0.018
+            distance = radius * (0.28 + 0.75 * ((i * 37 % 83) / 83) ** 0.5)
+            twinkle = 0.65 + 0.35 * math.sin(elapsed_s * 0.7 + i)
+            color = QColor("#6073a3" if is_light else "#cad8ff")
+            color.setAlpha(int((75 + i % 100) * twinkle))
+            painter.setBrush(color)
+            size = 0.6 + (i % 3) * 0.35
+            painter.drawEllipse(QPointF(math.cos(angle) * distance, math.sin(angle) * distance * 0.68), size, size)
+        colors = ("#a99aff", "#68bbef", "#58cfb4", "#e2b477", "#c28adb")
+        for i, color in enumerate(colors):
+            orbit = radius * (0.27 + i * 0.155)
             painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawPath(path)
-
-        positions: list[QPointF] = []
-        for index in range(6):
-            speed = 0.47 if index == 0 else 0.72 + index * 0.022
-            phase = elapsed_s * speed + index * math.tau / 6.0
-            positions.append(QPointF(
-                center.x() + math.cos(phase) * orbit * (0.76 + 0.10 * math.sin(phase * 1.7)),
-                center.y() + math.sin(phase * 1.27) * orbit * 0.62,
-            ))
-
-        # Two focal points meet in the middle, grow into a flare, then split.
-        approach = max(0.0, 1.0 - abs(loop - 0.50) / 0.30)
-        offset = orbit * 0.76 * (1.0 - approach)
-        drift = math.sin(loop * math.tau) * orbit * 0.20
-        positions[0] = QPointF(center.x() - offset, center.y() + drift)
-        positions[1] = QPointF(center.x() + offset, center.y() - drift)
-
-        def glow(point: QPointF, color: QColor, radius: float) -> None:
-            gradient = QRadialGradient(point, radius * 3.0)
-            gradient.setColorAt(0.0, QColor(255, 255, 255, int(255 * fade_in)))
-            gradient.setColorAt(0.16, QColor(color.red(), color.green(), color.blue(), int(235 * fade_in)))
-            gradient.setColorAt(0.54, QColor(color.red(), color.green(), color.blue(), int(56 * fade_in)))
-            gradient.setColorAt(1.0, QColor(color.red(), color.green(), color.blue(), 0))
+            painter.setPen(QColor(98, 124, 172, 55 if is_light else 65))
+            painter.drawEllipse(QPointF(0, 0), orbit, orbit * 0.56)
+            angle = elapsed_s * (0.7 / (1 + i * 0.55)) + i * 1.9
+            pos = QPointF(math.cos(angle) * orbit, math.sin(angle) * orbit * 0.56)
             painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(gradient)
-            painter.drawEllipse(point, radius * 3.0, radius * 3.0)
-            painter.setBrush(QColor(255, 255, 255, int(230 * fade_in)))
-            painter.drawEllipse(point, max(1.4, radius * 0.30), max(1.4, radius * 0.30))
-
-        for index, point in enumerate(positions):
-            radius = 4.5 + 1.6 * math.sin(elapsed_s * 1.2 + index) ** 2
-            if index in (0, 1):
-                radius += collision * 8.0
-            glow(point, palette[index], radius)
-
-        if collision > 0.02:
-            flare = orbit * (0.16 + collision * 0.20)
-            painter.setPen(QColor(235, 250, 255, int(160 * collision * fade_in)))
-            painter.drawLine(QPointF(center.x() - flare, center.y()), QPointF(center.x() + flare, center.y()))
-            painter.drawLine(QPointF(center.x(), center.y() - flare), QPointF(center.x(), center.y() + flare))
-
-    def _paint_economy_loader_legacy(self, painter: QPainter, bounds: QRectF, elapsed_s: float, fade_in: float, is_light: bool) -> None:
-        """A calm, organic cosmic loader with a subtle katana constellation."""
-        center = QPointF(bounds.center().x(), bounds.height() * 0.36)
-        orbit = max(76.0, min(bounds.width(), bounds.height()) * 0.145)
-        sky = QColor(37, 99, 235) if is_light else QColor(112, 205, 255)
-        violet = QColor(124, 92, 255) if is_light else QColor(176, 140, 255)
-
-        # Three loose orbital paths give the animation a breathing, hand-drawn
-        # rhythm instead of a mechanical spinner.
-        for arm in range(3):
-            phase = elapsed_s * (0.32 + arm * 0.035) + arm * 2.15
-            path = QPainterPath()
-            path.moveTo(center.x() - orbit * 0.92, center.y() + math.sin(phase) * orbit * 0.26)
-            path.cubicTo(
-                center.x() - orbit * 0.28,
-                center.y() - orbit * (0.98 + 0.10 * math.cos(phase)),
-                center.x() + orbit * 0.48,
-                center.y() + orbit * (0.90 + 0.08 * math.sin(phase)),
-                center.x() + orbit * 1.02,
-                center.y() - math.cos(phase) * orbit * 0.24,
-            )
-            color = sky if arm != 1 else violet
-            painter.setPen(QColor(color.red(), color.green(), color.blue(), int(92 * fade_in)))
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawPath(path)
-
-        for index in range(9):
-            phase = (elapsed_s * 0.21 + index / 9.0) % 1.0
-            angle = phase * math.tau + index * 0.29
-            radius = orbit * (0.54 + 0.43 * math.sin(index * 1.71 + elapsed_s * 0.22) ** 2)
-            x = center.x() + math.cos(angle) * radius
-            y = center.y() + math.sin(angle) * radius * 0.62
-            size = 2.2 + 3.2 * (0.5 + 0.5 * math.sin(elapsed_s * 1.8 + index))
-            color = sky if index % 3 else violet
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QColor(color.red(), color.green(), color.blue(), int((145 + index * 11) * fade_in)))
-            painter.drawEllipse(QPointF(x, y), size, size)
-
-        # Crescent and a tiny diagonal katana form a restrained samurai mark.
-        moon_r = orbit * 0.29
-        painter.setPen(QColor(sky.red(), sky.green(), sky.blue(), int(190 * fade_in)))
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawArc(QRectF(center.x() - moon_r, center.y() - moon_r, moon_r * 2, moon_r * 2), 38 * 16, 278 * 16)
-        painter.setPen(QColor(235, 248, 255, int(220 * fade_in)) if not is_light else QColor(30, 64, 175, int(220 * fade_in)))
-        painter.drawLine(
-            QPointF(center.x() - moon_r * 0.72, center.y() + moon_r * 0.50),
-            QPointF(center.x() + moon_r * 0.67, center.y() - moon_r * 0.58),
-        )
-        painter.setPen(QColor(220, 38, 38, int(210 * fade_in)))
-        painter.drawLine(
-            QPointF(center.x() - moon_r * 0.18, center.y() + moon_r * 0.08),
-            QPointF(center.x() + moon_r * 0.24, center.y() + moon_r * 0.08),
-        )
+            halo = QColor(color)
+            halo.setAlpha(28)
+            painter.setBrush(halo)
+            painter.drawEllipse(pos, 10 + i, 10 + i)
+            painter.setBrush(QColor(color))
+            painter.drawEllipse(pos, 3.3 + i * 0.55, 3.3 + i * 0.55)
+        sun = QRadialGradient(QPointF(0, 0), 24)
+        sun.setColorAt(0, QColor("#fff6d8"))
+        sun.setColorAt(0.2, QColor("#ffe0a0"))
+        sun.setColorAt(0.38, QColor(230, 185, 255, 190))
+        sun.setColorAt(1, QColor(148, 117, 255, 0))
+        painter.setBrush(sun)
+        painter.drawEllipse(QPointF(0, 0), 24, 24)
+        painter.restore()
 
     # ------------------------------------------------------------------
     def paintEvent(self, event) -> None:  # noqa: N802
@@ -1075,11 +809,8 @@ class OptimizationProgressOverlay(QWidget):
         elapsed_s = elapsed_ms / 1000.0
         fade_in = min(1.0, elapsed_s / 0.32)  # 320 ms fade-in
 
-        theme = (
-            QApplication.instance().property("theme")
-            if QApplication.instance()
-            else "dark"
-        )
+        app = QApplication.instance()
+        theme = app.property("theme") if app is not None else "dark"
         is_light = theme == "light"
 
         # ----------------------------------------------------------------
@@ -1356,7 +1087,8 @@ class OptimizationProgressOverlayLegacy(QWidget):
             return
 
         fade_in = self._fade_in_progress()
-        theme = QApplication.instance().property("theme") if QApplication.instance() else "dark"
+        app = QApplication.instance()
+        theme = app.property("theme") if app is not None else "dark"
         is_light = theme == "light"
         if is_light:
             painter.fillRect(bounds, QColor(248, 251, 255, 248))

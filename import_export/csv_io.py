@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 
@@ -9,7 +10,7 @@ def read_csv(path: str | Path) -> list[dict[str, str]]:
         return list(csv.DictReader(handle))
 
 
-def write_csv(path: str | Path, rows: list[dict[str, object]]) -> None:
+def write_csv(path: str | Path, rows: Sequence[Mapping[str, object]]) -> None:
     if not rows:
         # Write BOM-only so Excel still recognises the file as UTF-8.
         Path(path).write_text("﻿", encoding="utf-8")

@@ -102,7 +102,7 @@ def test_material_badge_precedes_and_centers_with_sheet_title() -> None:
     try:
         view.show_result(result)
         text_items = [
-            item for item in view.scene.items()
+            item for item in view.graphics_scene.items()
             if isinstance(item, QGraphicsTextItem)
         ]
         badge = next(item for item in text_items if item.toPlainText() == "POM-C")

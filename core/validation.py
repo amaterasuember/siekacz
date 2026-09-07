@@ -21,7 +21,7 @@ def safeNumber(value: object, fallback: float | None = None) -> float | None:
             number = float(text)
         else:
             number = float(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return fallback
     return number if math.isfinite(number) else fallback
 
@@ -140,6 +140,13 @@ def validateProjectInput(project: Project, max_total_parts: int | None = 15_000)
         for index, part in enumerate(project.sheet_parts, 1):
             _part, row_errors = validatePart(part, index)
             errors.extend(row_errors)
+            if part.grain_direction in {"x", "y"} and not any(
+                stock.grain_direction in {"x", "y"}
+                and materials_are_compatible(stock.material, part.material)
+                and abs(stock.thickness - part.thickness) < 0.001
+                for stock in project.sheet_stock
+            ):
+                errors.append(f"Formatka {index}: oznacz gwiazdką bok pasującej płyty, aby przypisać kierunek słojów.")
             total_quantity += max(0, _safe_int(_field(part, "quantity", 0)) or 0)
         if max_total_parts is not None and total_quantity > max_total_parts:
             errors.append(

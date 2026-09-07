@@ -66,7 +66,7 @@ class PartsPanel(QWidget):
     def _filter(self, table: EditableTable, text: str) -> None:
         needle = text.strip().lower()
         for row in range(table.rowCount()):
-            haystack = " ".join(table.item(row, col).text().lower() for col in range(table.columnCount()) if table.item(row, col))
+            haystack = " ".join(table.cell_text(row, col).lower() for col in range(table.columnCount()))
             table.setRowHidden(row, bool(needle and needle not in haystack))
 
     def set_parts(self, sheet_parts: list[SheetPart], linear_parts: list[LinearPart]) -> None:

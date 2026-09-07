@@ -122,11 +122,12 @@ def curve_intersections(
 ) -> tuple[CurveIntersection, ...]:
     if isinstance(first, LineEntity) and isinstance(second, LineEntity):
         raw = _line_line(first, second)
-    elif isinstance(first, LineEntity):
+    elif isinstance(first, LineEntity) and isinstance(second, (CircleEntity, ArcEntity)):
         raw = _line_circle(first, second)
-    elif isinstance(second, LineEntity):
+    elif isinstance(second, LineEntity) and isinstance(first, (CircleEntity, ArcEntity)):
         raw = tuple((point, second_parameter, first_parameter) for point, first_parameter, second_parameter in _line_circle(second, first))
     else:
+        assert isinstance(first, (CircleEntity, ArcEntity)) and isinstance(second, (CircleEntity, ArcEntity))
         raw = _circle_circle(first, second)
     unique: dict[tuple[int, int], CurveIntersection] = {}
     for point, first_parameter, second_parameter in raw:
@@ -193,8 +194,14 @@ def _pieces(source: EditableCurve, points: tuple[Point2D, ...]) -> list[SketchEn
             ))
         return result
     parameters = _split_parameters(source, points)
-    maker = _line_piece if isinstance(source, LineEntity) else _arc_piece
-    return [maker(source, start, end, entity_id=source.id if index == 0 else new_id()) for index, (start, end) in enumerate(zip(parameters, parameters[1:]))]
+    result = []
+    for index, (start, end) in enumerate(zip(parameters, parameters[1:])):
+        entity_id = source.id if index == 0 else new_id()
+        if isinstance(source, LineEntity):
+            result.append(_line_piece(source, start, end, entity_id=entity_id))
+        else:
+            result.append(_arc_piece(source, start, end, entity_id=entity_id))
+    return result
 
 
 def split_curve(source: EditableCurve, cutter: EditableCurve, pick_point: Point2D) -> TopologyEdit:
