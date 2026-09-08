@@ -48,6 +48,7 @@ class SheetStock:
     # ``x`` refers to ``width``, ``y`` to ``height`` and ``auto`` preserves
     # the optimizer's production defaults.
     preferred_cut_axis: str = "auto"
+    auto_linked: bool = False  # generated for a part material/thickness, not manual inventory
 
 
 def materials_are_compatible(stock_material: str, part_material: str) -> bool:

@@ -1,3 +1,10 @@
+# SIEKACZ 9000 — 4.0.1
+
+- Zmiana materiału lub grubości istniejącej formatki aktualizuje powiązaną płytę, zamiast dodawać kolejne płyty.
+- Osobna płyta powstaje wtedy, gdy inna formatka nadal potrzebuje wcześniejszego materiału i grubości. Powrót do wspólnego materiału usuwa zbędną płytę utworzoną automatycznie.
+- Powiązania działają przy cofaniu i ponawianiu zmian oraz po zapisaniu i ponownym otwarciu projektu. Ręcznie dodany, niezależny zapas pozostaje zachowany.
+- Zmiana materiału zachowuje ilość płyt, sztapel, priorytet i kierunek słojów. Podgląd wcześniejszego rozkroju jest sygnalizowany komunikatem o konieczności ponownego obliczenia.
+
 # SIEKACZ 9000 — 4.0.0
 
 - Odświeżony jasny i ciemny motyw, spokojniejsze cienie, czytelniejsze statystyki i obsługa mniejszych okien. Dotychczasowy układ pracy pozostaje zachowany.

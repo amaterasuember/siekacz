@@ -76,6 +76,7 @@ def validatePlate(data: Any, row: int = 1) -> tuple[SheetStock | None, list[str]
             min_offcut_width=max(0.0, safeNumber(_field(data, "min_offcut_width", 0), 0) or 0),
             min_offcut_height=max(0.0, safeNumber(_field(data, "min_offcut_height", 0), 0) or 0),
             source=_clean_text(_field(data, "source", "stock")) or "stock",
+            auto_linked=bool(_field(data, "auto_linked", False)),
             nominal_width=safeNumber(_field(data, "nominal_width", width), width) or width,
             nominal_height=safeNumber(_field(data, "nominal_height", height), height) or height,
             sheet_allowance=max(0.0, safeNumber(_field(data, "sheet_allowance", 0), 0) or 0),

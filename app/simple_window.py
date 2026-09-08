@@ -147,6 +147,8 @@ PART_PRIORITY_ROLE = int(Qt.ItemDataRole.UserRole) + 22
 PART_LABEL_ROLE = int(Qt.ItemDataRole.UserRole) + 23
 PART_NOTES_ROLE = int(Qt.ItemDataRole.UserRole) + 24
 STOCK_ALLOW_ROTATION_ROLE = int(Qt.ItemDataRole.UserRole) + 25
+PART_STOCK_PAIR_ROLE = int(Qt.ItemDataRole.UserRole) + 27
+STOCK_AUTO_LINKED_ROLE = int(Qt.ItemDataRole.UserRole) + 28
 
 PART_MATERIAL_COLUMN = 0
 PART_THICKNESS_COLUMN = 1
@@ -5585,14 +5587,19 @@ class SimpleCutWindow(QMainWindow):
         )
         selector.setCurrentIndex(matching if matching >= 0 else 0)
 
+        format_anchor = self.stock_table.item(row, STOCK_MATERIAL_COLUMN)
+
         def apply_format(index: int) -> None:
+            current_row = self.stock_table.row(format_anchor) if format_anchor is not None else -1
+            if current_row < 0:
+                return
             selected = selector.itemData(index)
             if not isinstance(selected, tuple) or len(selected) != 2:
                 return
             self.stock_table.blockSignals(True)
             try:
-                self._set_stock_cell_text(row, STOCK_HEIGHT_COLUMN, selected[0])
-                self._set_stock_cell_text(row, STOCK_WIDTH_COLUMN, selected[1])
+                self._set_stock_cell_text(current_row, STOCK_HEIGHT_COLUMN, selected[0])
+                self._set_stock_cell_text(current_row, STOCK_WIDTH_COLUMN, selected[1])
             finally:
                 self.stock_table.blockSignals(False)
 
@@ -5687,6 +5694,7 @@ class SimpleCutWindow(QMainWindow):
                 return f"{value} płyty"
             return f"{value} płyt"
 
+        stack_anchor = self.stock_table.item(row, STOCK_STACK_COLUMN)
         for value in quick_values:
             action = menu.addAction(stack_label(value))
             action.setCheckable(True)
@@ -5695,7 +5703,8 @@ class SimpleCutWindow(QMainWindow):
             if value > available:
                 action.setToolTip(f"Wymaga wpisania co najmniej {value} płyt w kolumnie SZT.")
             action.triggered.connect(
-                lambda _checked=False, selected=value: self._set_stock_stack_size(row, selected)
+                lambda _checked=False, selected=value: self._set_stock_stack_size(
+                    self.stock_table.row(stack_anchor) if stack_anchor is not None else -1, selected)
             )
         menu.addSeparator()
         custom_action = menu.addAction("Inna liczba...")
@@ -5924,6 +5933,7 @@ class SimpleCutWindow(QMainWindow):
                 "preferred_cut_axis": values.preferred_cut_axis,
                 "allow_rotation": values.allow_rotation,
                 "grain_direction": values.grain_direction,
+                "auto_linked": values.auto_linked,
             }
         context_material, context_thickness = self._active_part_context()
         data = dict(values or {"thickness": context_thickness, "width": 1000, "height": 2000, "quantity": 1})
@@ -5946,6 +5956,7 @@ class SimpleCutWindow(QMainWindow):
         material_item.setData(Qt.ItemDataRole.UserRole, True)
         material_item.setData(GRAIN_ROLE, str(data.get("grain_direction", "none")))
         material_item.setData(STOCK_TEMPLATE_ROLE, bool(data.get("template", False)))
+        material_item.setData(STOCK_AUTO_LINKED_ROLE, bool(data.get("auto_linked", data.get("template", False))))
         material_item.setData(
             STOCK_ALLOW_ROTATION_ROLE,
             bool(data.get("allow_rotation", getattr(self, "_algo_settings", {}).get("allow_rotation_stock", True))),
@@ -5976,7 +5987,7 @@ class SimpleCutWindow(QMainWindow):
             )
         _update_prio_style(prio_btn.isChecked())
         prio_btn.toggled.connect(_update_prio_style)
-        prio_btn.toggled.connect(lambda checked, stock_row=row: self._set_stock_priority(stock_row, checked))
+        prio_btn.toggled.connect(lambda checked, anchor=material_item: self._set_stock_priority(self.stock_table.row(anchor), checked))
         priority_item = self._stock_item("")
         priority_item.setFlags(priority_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
         priority_item.setData(Qt.ItemDataRole.UserRole, priority_val)
@@ -6059,6 +6070,7 @@ class SimpleCutWindow(QMainWindow):
                     "price": 0,
                     "priority": 1 if isinstance(priority_control, QAbstractButton) and priority_control.isChecked() else 0,
                     "preferred_cut_axis": self._stock_preferred_cut_axis(row),
+                    "auto_linked": bool(material_item.data(STOCK_AUTO_LINKED_ROLE)) if material_item else False,
                     "grain_direction": str(material_item.data(GRAIN_ROLE) or "none") if material_item else "none",
                     "allow_rotation": bool(
                         rotation_data
@@ -7133,6 +7145,7 @@ class SimpleCutWindow(QMainWindow):
         return tuple(rows)
 
     def _apply_parts_snapshot(self, snapshot: tuple) -> None:
+        previous_pairs = self._part_stock_pairs()
         self._parts_undo_suspended = True
         try:
             self.parts.setRowCount(0)
@@ -7165,7 +7178,7 @@ class SimpleCutWindow(QMainWindow):
         finally:
             self._parts_undo_suspended = False
         self._parts_current_snapshot = snapshot
-        self._sync_stock_with_parts()
+        self._sync_stock_with_parts(previous_pairs)
         self._refresh_linked_pair_glows()
 
     def _record_parts_state(self) -> None:
@@ -7181,104 +7194,104 @@ class SimpleCutWindow(QMainWindow):
             self._parts_redo_stack.clear()
         self._parts_current_snapshot = snap
 
-    def _sync_stock_with_parts(self) -> None:
+    def _part_stock_pairs(self) -> set[tuple[str, float]]:
+        pairs = set()
+        for row in range(self.parts.rowCount()):
+            item = self.parts.item(row, PART_MATERIAL_COLUMN)
+            value = item.data(PART_STOCK_PAIR_ROLE) if item else None
+            if isinstance(value, (list, tuple)) and len(value) == 2:
+                pairs.add((str(value[0]), float(value[1])))
+        return pairs
+
+    def _sync_stock_with_parts(self, previous_pairs: set[tuple[str, float]] | None = None) -> None:
         if getattr(self, "_syncing_stock", False):
             return
         self._syncing_stock = True
         try:
-            # Dict preserves the visible part-row order.  The previous set made
-            # assignment of the first template board non-deterministic.
             required: dict[tuple[str, float], str] = {}
-            for r in range(self.parts.rowCount()):
-                height_item = self.parts.item(r, PART_HEIGHT_COLUMN)
-                width_item = self.parts.item(r, PART_WIDTH_COLUMN)
-                height_text = height_item.text().strip() if height_item else ""
-                width_text = width_item.text().strip() if width_item else ""
-                if not height_text and not width_text:
-                    # Draft rows carry default quantity/thickness/material for
-                    # faster entry, but they are not material demand yet.
+            changed_pairs = set(previous_pairs or ())
+            pending_pairs: set[tuple[str, float]] = set()
+            bindings: list[tuple[QTableWidgetItem, tuple[str, float]]] = []
+            for row in range(self.parts.rowCount()):
+                item = self.parts.item(row, PART_MATERIAL_COLUMN)
+                if item is None:
                     continue
-                mat_item = self.parts.item(r, PART_MATERIAL_COLUMN)
-                thk_item = self.parts.item(r, PART_THICKNESS_COLUMN)
-                mat_text = mat_item.text().strip() if mat_item else ""
-                thk_text = thk_item.text().strip() if thk_item else ""
-                if not mat_text and not self._material_catalog:
-                    mat_text = "standard"
-                if mat_text and mat_text != "-" and thk_text:
-                    try:
-                        thk = round(float(thk_text.replace(",", ".")), 4)
-                        if thk > 0:
-                            required.setdefault((mat_text.casefold(), thk), mat_text)
-                    except ValueError:
-                        pass
+                old = item.data(PART_STOCK_PAIR_ROLE)
+                old_pair = (str(old[0]), float(old[1])) if isinstance(old, (list, tuple)) and len(old) == 2 else None
+                dimensions = [_table_text(self.parts, row, c).strip() for c in (PART_HEIGHT_COLUMN, PART_WIDTH_COLUMN)]
+                material = item.text().strip() or ("standard" if not self._material_catalog else "")
+                pair = self._linked_pair_key(material, _table_text(self.parts, row, PART_THICKNESS_COLUMN))
+                if not any(dimensions) or pair is None:
+                    # A temporarily blank thickness must not sever the last
+                    # complete link while the material/thickness menu is open.
+                    if old_pair:
+                        pending_pairs.add(old_pair)
+                    continue
+                required.setdefault(pair, material)
+                bindings.append((item, pair))
+                if old_pair and old_pair != pair:
+                    changed_pairs.add(old_pair)
 
-            existing = []
-            existing_set = set()
-            for r in range(self.stock_table.rowCount()):
-                mat = self._stock_cell_text(r, STOCK_MATERIAL_COLUMN).strip()
-                thk_text = self._stock_cell_text(r, STOCK_THICKNESS_COLUMN).strip()
-                if mat and thk_text:
-                    try:
-                        thk = round(float(thk_text.replace(",", ".")), 4)
-                        existing.append({"row": r, "mat": mat.casefold(), "thk": thk})
-                        existing_set.add((mat.casefold(), thk))
-                    except ValueError:
-                        pass
-
-            missing = []
-            for (req_mat, req_thk), display in required.items():
-                if (req_mat, req_thk) not in existing_set:
-                    missing.append((req_mat, req_thk, display))
-
-            # The initial board is a template, not a committed material.
-            # Prefer replacing it before adding another row for the first part
-            # material/thickness pair. Older explicitly typed boards are never
-            # repurposed just because a later part has a different thickness.
-            repurposable_rows = []
+            needed = set(required) | pending_pairs
+            retired = changed_pairs - needed
+            existing: dict[tuple[str, float], list[int]] = {}
+            reusable: list[int] = []
             for row in range(self.stock_table.rowCount()):
-                material = self._stock_cell_text(row, STOCK_MATERIAL_COLUMN).strip().casefold()
-                material_item = self.stock_table.item(row, STOCK_MATERIAL_COLUMN)
-                is_initial_template = bool(material_item and material_item.data(STOCK_TEMPLATE_ROLE))
-                if not material or material == "standard" or is_initial_template:
-                    repurposable_rows.append(row)
-            # Never recycle a material-specific board when a part changes.
-            # Keeping that stock and adding the newly required specification is
-            # safer than silently changing a different board in the table.
+                item = self.stock_table.item(row, STOCK_MATERIAL_COLUMN)
+                material = self._stock_cell_text(row, STOCK_MATERIAL_COLUMN).strip()
+                pair = self._linked_pair_key(material, self._stock_cell_text(row, STOCK_THICKNESS_COLUMN))
+                if pair:
+                    existing.setdefault(pair, []).append(row)
+                if pair not in needed and (pair in retired or not material or material.casefold() == "standard"
+                                           or bool(item and item.data(STOCK_TEMPLATE_ROLE))):
+                    reusable.append(row)
 
-            for (req_mat, req_thk, display) in missing:
-                catalog_format = self._default_catalog_format(display, req_thk)
-                catalog_preset = (
-                    (catalog_format.width, catalog_format.height)
-                    if catalog_format is not None and catalog_format.width > 0 and catalog_format.height > 0
-                    else None
-                )
-                if repurposable_rows:
-                    row_to_edit = repurposable_rows.pop(0)
-                    self._set_stock_cell_text(row_to_edit, STOCK_THICKNESS_COLUMN, f"{req_thk:g}")
-                    self._set_stock_cell_text(row_to_edit, STOCK_MATERIAL_COLUMN, display)
-                    material_item = self.stock_table.item(row_to_edit, STOCK_MATERIAL_COLUMN)
-                    if material_item is not None:
+            for pair, display in required.items():
+                if pair in existing:
+                    continue
+                thickness = pair[1]
+                catalog_format = self._default_catalog_format(display, thickness)
+                preset = ((catalog_format.width, catalog_format.height)
+                          if catalog_format and catalog_format.width > 0 and catalog_format.height > 0 else None)
+                if reusable:
+                    row = reusable.pop(0)
+                    material_item = self.stock_table.item(row, STOCK_MATERIAL_COLUMN)
+                    self._set_stock_cell_text(row, STOCK_THICKNESS_COLUMN, f"{thickness:g}")
+                    self._set_stock_cell_text(row, STOCK_MATERIAL_COLUMN, display)
+                    if material_item:
                         material_item.setData(STOCK_TEMPLATE_ROLE, False)
-                    if catalog_preset is not None:
-                        self._set_stock_cell_text(row_to_edit, STOCK_HEIGHT_COLUMN, catalog_preset[0])
-                        self._set_stock_cell_text(row_to_edit, STOCK_WIDTH_COLUMN, catalog_preset[1])
-                    self._set_stock_cut_axis(row_to_edit, "auto")
-                    self._set_material_badge(self.stock_table, row_to_edit, STOCK_MATERIAL_COLUMN, display, editable=False)
-                    self._set_stock_format_selector(row_to_edit)
+                    if preset:
+                        self._set_stock_cell_text(row, STOCK_HEIGHT_COLUMN, preset[0])
+                        self._set_stock_cell_text(row, STOCK_WIDTH_COLUMN, preset[1])
+                    # Keep quantity, stacking, priority, grain and the cut axis.
+                    self._set_material_badge(self.stock_table, row, STOCK_MATERIAL_COLUMN, display, editable=False)
+                    self._set_stock_format_selector(row)
+                    existing[pair] = [row]
                 else:
-                    preset = catalog_preset or self._default_sheet_preset_for_material(display)
-                    if preset is None:
-                        preset = (2000.0, 1000.0)
-                    self._add_stock_row({
-                        "thickness": req_thk,
-                        "material": display,
-                        "width": preset[0],
-                        "height": preset[1],
-                        "quantity": 1
-                    })
+                    preset = preset or self._default_sheet_preset_for_material(display) or (2000.0, 1000.0)
+                    self._add_stock_row({"thickness": thickness, "material": display,
+                                         "width": preset[0], "height": preset[1], "quantity": 1, "auto_linked": True})
+                    existing[pair] = [self.stock_table.rowCount() - 1]
 
+            # Converging two part specifications back to one should also remove
+            # the now-unused automatically generated board, but not manual stock.
+            for row in range(self.stock_table.rowCount() - 1, -1, -1):
+                item = self.stock_table.item(row, STOCK_MATERIAL_COLUMN)
+                pair = self._linked_pair_key(self._stock_cell_text(row, STOCK_MATERIAL_COLUMN),
+                                            self._stock_cell_text(row, STOCK_THICKNESS_COLUMN))
+                if pair in retired and item and item.data(STOCK_AUTO_LINKED_ROLE):
+                    self.stock_table.removeRow(row)
+            blocked = self.parts.blockSignals(True)
+            try:
+                for item, pair in bindings:
+                    item.setData(PART_STOCK_PAIR_ROLE, pair)
+            finally:
+                self.parts.blockSignals(blocked)
             self._last_known_required = set(required)
             self._refresh_linked_pair_glows()
+            if changed_pairs and getattr(self, "last_result", None) is not None:
+                self.statusBar().showMessage("Dane zmienione — podgląd przedstawia poprzedni rozkrój. Kliknij Oblicz rozkrój.")
+
         finally:
             self._syncing_stock = False
 

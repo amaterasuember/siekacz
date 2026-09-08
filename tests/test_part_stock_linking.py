@@ -8,6 +8,7 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
 from app.material_catalog import MaterialCatalogEntry, catalog_family_label
@@ -61,7 +62,7 @@ def test_first_part_replaces_default_stock_and_new_thickness_is_independent() ->
     print("[OK] first default board is replaced and later board rows inherit only the latest part context")
 
 
-def test_changing_part_thickness_adds_stock_without_rewriting_existing_board() -> None:
+def test_changing_only_part_thickness_updates_linked_board() -> None:
     _app()
     window = SimpleCutWindow()
     try:
@@ -80,12 +81,10 @@ def test_changing_part_thickness_adds_stock_without_rewriting_existing_board() -
         QApplication.processEvents()
 
         contexts = _stock_context(window)
-        assert ("POM-C naturalny", "18") in contexts
-        assert ("POM-C naturalny", "25") in contexts
-        assert len(contexts) == 2
+        assert contexts == [("POM-C naturalny", "25")]
     finally:
         window.close()
-    print("[OK] thickness edit adds a new board specification and preserves existing stock")
+    print("[OK] thickness edit follows the only linked part without adding a board")
 
 
 def test_blank_material_is_inferred_and_draft_row_creates_no_stock_demand() -> None:
@@ -149,8 +148,7 @@ def test_material_change_waits_for_valid_thickness_before_syncing_stock() -> Non
 
         window._set_part_material_thickness(0, new_material, 10)
         contexts = _stock_context(window)
-        assert (old_material, "18") in contexts
-        assert (new_material, "10") in contexts
+        assert contexts == [(new_material, "10")]
         assert (new_material, "18") not in contexts
     finally:
         window.close()
@@ -224,11 +222,82 @@ def test_validation_error_takes_priority_over_pair_glow() -> None:
     print("[OK] red validation state wins and the pair glow returns after correction")
 
 
+def test_repeated_material_edits_split_merge_and_undo() -> None:
+    from core.models import Project
+    from ui.grain_delegate import GRAIN_ROLE
+    from app.simple_window import STOCK_QUANTITY_COLUMN
+    _app()
+    w = SimpleCutWindow()
+    w._material_catalog = []
+    w.parts.setRowCount(0)
+    w.stock_table.setRowCount(0)
+    w._add_stock_row({"material": "standard", "thickness": 5, "width": 1000,
+                      "height": 2000, "quantity": 7, "template": True})
+    w.add_part_row([5, 300, 200, 1000, "PE"])
+    w.stock_table.item(0, STOCK_MATERIAL_COLUMN).setData(GRAIN_ROLE, "y")
+    for material in ("PTFE", "PA6", "PE", "PTFE", "PE"):
+        w._set_part_material_thickness(0, material, 5)
+        assert _stock_context(w) == [(material, "5")]
+        assert w._stock_cell_text(0, STOCK_QUANTITY_COLUMN) == "7"
+        assert w.stock_table.item(0, STOCK_MATERIAL_COLUMN).data(GRAIN_ROLE) == "y"
+    w.add_part_row([5, 100, 50, 1, "PE"])
+    w._set_part_material_thickness(1, "PTFE", 5)
+    assert _stock_context(w) == [("PE", "5"), ("PTFE", "5")]
+    w._set_part_material_thickness(1, "PA6", 10)
+    assert _stock_context(w) == [("PE", "5"), ("PA6", "10")]
+    w._undo_parts()
+    assert _stock_context(w) == [("PE", "5"), ("PTFE", "5")]
+    w._redo_parts()
+    assert _stock_context(w) == [("PE", "5"), ("PA6", "10")]
+    saved = Project(sheet_stock=w._collect_stock(), sheet_parts=w._collect_parts())
+    w._load_project_inputs(Project.from_dict(saved.to_dict()))
+    w._set_part_material_thickness(1, "PE", 5)
+    assert _stock_context(w) == [("PE", "5")]
+    # Manual inventory unrelated to the edited part must survive.
+    w._add_stock_row({"material": "ABS", "thickness": 3, "width": 900, "height": 900, "quantity": 2})
+    w._set_part_material_thickness(0, "PTFE", 5)
+    assert ("PE", "5") in _stock_context(w)  # still needed by row 2
+    assert ("ABS", "3") in _stock_context(w)
+    assert ("PTFE", "5") in _stock_context(w)
+    w.close()
+    print("[OK] repeated material changes, shared boards, splitting, merging, undo/redo and saved linkage")
+
+
+def test_pending_thickness_keeps_link_and_shifted_controls_follow_row() -> None:
+    from app.simple_window import STOCK_PRIORITY_COLUMN
+    _app()
+    w = SimpleCutWindow()
+    w._material_catalog = []
+    w.parts.setRowCount(0)
+    w.stock_table.setRowCount(0)
+    for material in ("PE", "PTFE", "PA6"):
+        w.add_part_row([5, 100, 200, 1, material])
+    # Simulate the real two-stage picker while another row is being edited.
+    w._set_row_material(w.parts, 0, PART_MATERIAL_COLUMN, "ABS", sync_stock=False)
+    w.parts.blockSignals(True)
+    w.parts.item(0, PART_THICKNESS_COLUMN).setText("")
+    w.parts.blockSignals(False)
+    w._set_part_material_thickness(2, "PA6", 10)
+    assert _stock_context(w) == [("PE", "5"), ("PTFE", "5"), ("PA6", "10")]
+    w._set_part_material_thickness(0, "ABS", 3)
+    assert _stock_context(w) == [("ABS", "3"), ("PTFE", "5"), ("PA6", "10")]
+    w._set_part_material_thickness(1, "ABS", 3)
+    assert _stock_context(w) == [("ABS", "3"), ("PA6", "10")]
+    button = w.stock_table.cellWidget(1, STOCK_PRIORITY_COLUMN)
+    button.click()
+    assert w.stock_table.item(1, STOCK_PRIORITY_COLUMN).data(Qt.ItemDataRole.UserRole) == 1
+    assert not w.stock_table.item(0, STOCK_PRIORITY_COLUMN).data(Qt.ItemDataRole.UserRole)
+    w.close()
+    print("[OK] pending material choice retains linkage and controls survive removal of a middle board")
+
+
 if __name__ == "__main__":
     test_first_part_replaces_default_stock_and_new_thickness_is_independent()
-    test_changing_part_thickness_adds_stock_without_rewriting_existing_board()
+    test_changing_only_part_thickness_updates_linked_board()
     test_blank_material_is_inferred_and_draft_row_creates_no_stock_demand()
     test_material_change_waits_for_valid_thickness_before_syncing_stock()
     test_integrated_pairs_share_a_subtle_stable_glow()
     test_validation_error_takes_priority_over_pair_glow()
+    test_repeated_material_edits_split_merge_and_undo()
+    test_pending_thickness_keeps_link_and_shifted_controls_follow_row()
     print("PART/STOCK LINKING TESTS OK")
