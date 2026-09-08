@@ -1,0 +1,69 @@
+name: Publish built release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version whose installers have already been built
+        required: true
+      build_run_id:
+        description: Release multiplatform run containing the five installer artifacts
+        required: true
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      VERSION: ${{ inputs.version }}
+      BUILD_RUN_ID: ${{ inputs.build_run_id }}
+    steps:
+      - name: Verify artifact provenance
+        run: |
+          python - <<'PY'
+          import json, os, re, subprocess
+          version, run_id = os.environ['VERSION'], os.environ['BUILD_RUN_ID']
+          assert re.fullmatch(r'\d+\.\d+\.\d+', version)
+          assert re.fullmatch(r'\d+', run_id)
+          repo = os.environ['GH_REPO']
+          def api(path):
+              return json.loads(subprocess.check_output(['gh', 'api', f'repos/{repo}/{path}']))
+          run = api(f'actions/runs/{run_id}')
+          tag = api(f'git/ref/tags/v{version}')
+          assert run['path'] == '.github/workflows/release-multiplatform.yml'
+          assert run['head_sha'] == tag['object']['sha'], 'Build commit differs from release tag'
+          artifacts = api(f'actions/runs/{run_id}/artifacts')['artifacts']
+          expected = {'installer-windows-x64', 'installer-macos-x64', 'installer-macos-arm64', 'installer-linux-x86_64', 'installer-linux-aarch64'}
+          assert {a['name'] for a in artifacts} == expected
+          assert all(not a['expired'] for a in artifacts)
+          PY
+      - uses: actions/checkout@v4
+        with:
+          ref: v${{ inputs.version }}
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.build_run_id }}
+          pattern: installer-*
+          path: release-assets
+          merge-multiple: true
+      - name: Publish verified installers
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          version = os.environ['VERSION']
+          names = {p.name for p in Path('release-assets').iterdir() if p.is_file()}
+          expected = {f'SIEKACZ9000_Setup_v{version}_windows-x64.exe'}
+          expected |= {f'SIEKACZ9000_v{version}_{p}.dmg' for p in ('macos-x64', 'macos-arm64')}
+          expected |= {f'SIEKACZ9000_v{version}_{p}.AppImage' for p in ('linux-x86_64', 'linux-aarch64')}
+          assert names == expected, (names, expected)
+          assert all(p.stat().st_size > 1_000_000 for p in Path('release-assets').iterdir())
+          PY
+          gh release create "v$VERSION" release-assets/* --verify-tag \
+            --title "SIEKACZ 9000 v$VERSION" --notes-file RELEASE_NOTES_v4.md
