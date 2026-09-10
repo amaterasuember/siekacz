@@ -50,7 +50,32 @@ editor.setText("17")
 QTest.keyClick(editor, Qt.Key.Key_Return)
 app.processEvents()
 assert calculated == ["17"] and w.parts.rowCount() == 1
+w.add_part_row([7, "", "", 1, "PA6"])
+w.add_part_row([7, "", "", 1, "PA6"])
+w._remove_empty_part_drafts()
+assert w.parts.rowCount() == 1
+w._undo_parts()
+assert w.parts.rowCount() == 3
+w._redo_parts()
+assert w.parts.rowCount() == 1
 w.close()
+# A material menu must follow its item after an earlier row is removed.
+from app.material_catalog import MaterialCatalogEntry, catalog_family_label
+menu_window = SimpleCutWindow()
+entry = MaterialCatalogEntry("PVC", 3, 100, 123, "PVC PŁYTA SZARA", width=1000, height=2000)
+menu_window._material_catalog = [entry]
+menu_window.parts.setRowCount(0)
+menu_window.stock_table.setRowCount(0)
+for _ in range(2):
+    menu_window.add_part_row([3, 100, 50, 1, catalog_family_label(entry)])
+menu_window.parts.selectRow(0)
+menu_window.remove_selected_rows()
+selected_rows = []
+menu_window._choose_part_thickness = lambda row, value, menu=None: selected_rows.append(row)
+menu = menu_window.parts.cellWidget(0, 0).menu()
+next(a for a in menu.actions() if a.isCheckable()).trigger()
+assert selected_rows == [0]
+menu_window.close()
 with tempfile.TemporaryDirectory() as folder:
     source = Path(folder)/"rounded.dxf"
     d = ezdxf.new()

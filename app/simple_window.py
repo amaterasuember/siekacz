@@ -5464,6 +5464,18 @@ class SimpleCutWindow(QMainWindow):
             table.setCellWidget(row, column, badge)
             return
         menu = QMenu(badge)
+        anchor = table.item(row, column)
+
+        def apply_material(value: str, *, choose_thickness: bool = False) -> None:
+            current_row = table.row(anchor) if anchor is not None else -1
+            if current_row < 0:
+                return
+            if choose_thickness:
+                self._choose_part_thickness(current_row, value, menu)
+            else:
+                menu.hide()
+                self._set_row_material(table, current_row, column, value)
+
         from PySide6.QtGui import QActionGroup
         group = QActionGroup(menu)
         group.setExclusive(True)
@@ -5472,7 +5484,7 @@ class SimpleCutWindow(QMainWindow):
             empty_action.setCheckable(True)
             empty_action.setActionGroup(group)
             empty_action.setChecked(not material.strip() or material.strip() == "-")
-            empty_action.triggered.connect(lambda _checked=False, m=menu: (m.hide(), self._set_row_material(table, row, column, "")))
+            empty_action.triggered.connect(lambda _checked=False: apply_material(""))
         choices = self._material_badge_choices(table, material)
         if choices:
             menu.addSeparator()
@@ -5492,11 +5504,11 @@ class SimpleCutWindow(QMainWindow):
             action.setChecked(choice.casefold() == material.strip().casefold())
             if table is getattr(self, "parts", None):
                 action.triggered.connect(
-                    lambda _checked=False, value=choice, m=menu: self._choose_part_thickness(row, value, m)
+                    lambda _checked=False, value=choice: apply_material(value, choose_thickness=True)
                 )
             else:
                 action.triggered.connect(
-                    lambda _checked=False, value=choice, m=menu: (m.hide(), self._set_row_material(table, row, column, value))
+                    lambda _checked=False, value=choice: apply_material(value)
                 )
             material_actions.append(action)
         def filter_choices(query: str) -> None:
@@ -7941,12 +7953,26 @@ class SimpleCutWindow(QMainWindow):
 
 
 
+    def _remove_empty_part_drafts(self) -> None:
+        """Discard unused entry rows only after a calculation's parts validate."""
+        rows = [row for row in range(self.parts.rowCount())
+                if not any(_table_text(self.parts, row, column).strip()
+                           for column in (PART_HEIGHT_COLUMN, PART_WIDTH_COLUMN))]
+        if not rows or len(rows) == self.parts.rowCount():
+            return
+        self._record_parts_state()
+        for row in reversed(rows):
+            self.parts.removeRow(row)
+        self._sync_stock_with_parts()
+        self._record_parts_state()
+
     @safe_ui_action("Nie udało się policzyć rozkroju. Sprawdź dane wejściowe.")
     def calculate(self) -> None:
         if self._is_calculating or self._calculation_thread is not None:
             return
         try:
             parts = self._collect_parts()
+            self._remove_empty_part_drafts()
             primary = self._project_for_calculation(parts)
             oversized = self._oversized_part_issues(primary)
             if oversized:

@@ -1,6 +1,7 @@
 # SIEKACZ 9000 — 4.0.2
 
 - Enter w polu ilości zapisuje wartość i uruchamia rozkrój bez dodawania wiersza. Tab nadal przechodzi do następnej formatki.
+- Obliczenie usuwa puste wiersze pozostawione przez wcześniejsze wpisywanie. Menu materiału po usunięciu wiersza nadal edytuje właściwą formatkę.
 - Usuwanie i czyszczenie formatek zwalnia nieużywane automatyczne płyty; cofanie i ponawianie przywraca ich powiązania.
 - Podgląd rozkroju i PNG zachowują kontur DXF zapisany w projekcie. Prostokąt przerywany oznacza półfabrykat do cięcia piłą.
 - CAD: pomiar pojedynczych boków, dokładny promień R i długość łuku, przyciąganie pomiaru do narożników i krawędzi.
