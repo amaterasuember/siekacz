@@ -17,6 +17,7 @@ def test_complete_dxf_is_imported_as_one_drawing_blank() -> None:
     with tempfile.TemporaryDirectory() as directory:
         source = Path(directory) / "details.dxf"
         document = ezdxf.new("R2010")
+        document.header["$INSUNITS"] = 4
         modelspace = document.modelspace()
         for offset in (0, 150):
             modelspace.add_lwpolyline(

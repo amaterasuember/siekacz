@@ -8,6 +8,7 @@ so a selected side can be measured in real 3D space.
 """
 
 import re
+import math
 import struct
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -25,6 +26,9 @@ class CadEdge:
     source_id: str = ""
     kind: str = "krawędź"
     approximate: bool = False
+    radius: float | None = None
+    exact_length: float | None = None
+    center: tuple[float, float, float] | None = None
 
 
 @dataclass
@@ -53,6 +57,8 @@ class CadInspectionModel:
 
     def edge_length(self, edge_index: int) -> float:
         edge = self.edges[edge_index]
+        if edge.exact_length is not None:
+            return edge.exact_length
         first, second = self.vertices[edge.start], self.vertices[edge.end]
         return sum((second[axis] - first[axis]) ** 2 for axis in range(3)) ** 0.5
 
@@ -90,6 +96,9 @@ class _GeometryBuilder:
         source_id: str = "",
         kind: str = "krawędź",
         approximate: bool = False,
+        radius: float | None = None,
+        exact_length: float | None = None,
+        center: tuple[float, float, float] | None = None,
     ) -> None:
         start = first if isinstance(first, int) else self.vertex(first)
         end = second if isinstance(second, int) else self.vertex(second)
@@ -99,7 +108,7 @@ class _GeometryBuilder:
         if key in self._edge_keys:
             return
         self._edge_keys.add(key)
-        self.edges.append(CadEdge(start, end, source_id, kind, approximate))
+        self.edges.append(CadEdge(start, end, source_id, kind, approximate, radius, exact_length, center))
 
     def triangle(self, points: Iterable[Iterable[float]], *, source_id: str = "") -> None:
         indices = tuple(self.vertex(point) for point in points)
@@ -155,12 +164,21 @@ def load_dxf(path: str | Path) -> CadInspectionModel:
     unit_name, scale = _DXF_UNITS.get(unit_code, (f"kod DXF {unit_code}", 1.0))
     builder = _GeometryBuilder()
     warnings: list[str] = []
+    skipped: dict[str, int] = {}
     if unit_code == 0:
         warnings.append("DXF nie deklaruje jednostek — przyjęto milimetry.")
 
-    for entity in _dxf_entities(document.modelspace()):
+    def segments(entities):
+        for index, entity in enumerate(_dxf_entities(entities)):
+            handle = str(getattr(entity.dxf, "handle", "") or f"entity-{index}")
+            if entity.dxftype() in {"LWPOLYLINE", "POLYLINE"}:
+                for part_index, segment in enumerate(entity.virtual_entities()):
+                    yield segment, f"{handle}:{part_index}"
+            else:
+                yield entity, handle
+
+    for entity, source_id in segments(document.modelspace()):
         kind = entity.dxftype()
-        source_id = str(getattr(entity.dxf, "handle", "") or kind)
         try:
             if kind == "LINE":
                 builder.edge(_xyz(entity.dxf.start, scale), _xyz(entity.dxf.end, scale), source_id=source_id, kind="linia")
@@ -171,17 +189,24 @@ def load_dxf(path: str | Path) -> CadInspectionModel:
                 continue
             path_object = make_path(entity)
             points = list(path_object.flattening(distance=max(0.02 / max(scale, 1e-9), 1e-5), segments=24))
+            radius = float(entity.dxf.radius) * scale if kind in {"ARC", "CIRCLE"} else None
+            sweep = ((float(entity.dxf.end_angle) - float(entity.dxf.start_angle)) % 360 or 360) if kind == "ARC" else 360
+            exact = radius * math.radians(sweep) / (len(points) - 1) if radius is not None and len(points) > 1 else None
             for first, second in zip(points, points[1:]):
                 builder.edge(
                     _xyz(first, scale),
                     _xyz(second, scale),
                     source_id=source_id,
                     kind=kind.casefold(),
-                    approximate=kind not in {"LINE", "LWPOLYLINE", "POLYLINE"},
+                    approximate=exact is None and kind not in {"LINE", "LWPOLYLINE", "POLYLINE"},
+                    radius=radius, exact_length=exact,
+                    center=_xyz(entity.ocs().to_wcs(entity.dxf.center), scale) if radius is not None else None,
                 )
         except Exception:
-            warnings.append(f"Pominięto nieobsługiwaną encję DXF {kind} ({source_id}).")
+            skipped[kind] = skipped.get(kind, 0) + 1
 
+    if skipped:
+        warnings.append("Pominięte adnotacje lub encje: " + ", ".join(f"{kind}: {count}" for kind, count in sorted(skipped.items())))
     if not builder.edges:
         raise CadInspectionError("DXF nie zawiera krawędzi możliwych do pokazania i zmierzenia.")
     return CadInspectionModel(source, "DXF", builder.vertices, builder.edges, builder.faces, unit_name, warnings)

@@ -6,6 +6,7 @@ The panel optimiser cannot nest arbitrary CAD contours. Import therefore uses
 one rectangular blank covering the complete drawing, while keeping the source
 path in the part notes for later editing or export.
 """
+import json
 from pathlib import Path
 
 from core.models import OptimizationResult, SheetPart, SheetLayout
@@ -58,6 +59,14 @@ def _entity_bounds(entity) -> tuple[float, float, float, float] | None:
     return None
 
 
+def inspection_contour_notes(model) -> str:
+    low, _ = model.bounds
+    width, height, _ = model.dimensions
+    contours = [[[(model.vertices[i][0]-low[0])/width, 1-(model.vertices[i][1]-low[1])/height]
+                 for i in (edge.start, edge.end)] for edge in model.edges]
+    return f"DXF:{model.source_path}|origin={low[0]:g},{low[1]:g}|contours=" + json.dumps(contours, separators=(",", ":"))
+
+
 def import_dxf_parts(path: str | Path, material: str = "", thickness: float = 0.0) -> list[SheetPart]:
     """Import the complete DXF drawing as one rectangular cutting blank."""
     filemanagement = _require_ezdxf()
@@ -103,6 +112,16 @@ def import_dxf_parts(path: str | Path, material: str = "", thickness: float = 0.
     if width <= 0.01 or height <= 0.01:
         raise DxfError("Obszar rysunku DXF ma zerową szerokość lub wysokość.")
 
+    from cad.inspection import load_dxf, _DXF_UNITS, CadInspectionError
+    scale = _DXF_UNITS.get(int(document.header.get("$INSUNITS", 0) or 0), ("mm", 1.0))[1]
+    width, height = round(width * scale, 3), round(height * scale, 3)
+    try:
+        model = load_dxf(source)
+    except CadInspectionError as exc:
+        raise DxfError(str(exc)) from exc
+    origin_x, origin_y = float(extents.extmin.x) * scale, float(extents.extmin.y) * scale
+    contours = [[[(model.vertices[i][0]-origin_x)/width, 1-(model.vertices[i][1]-origin_y)/height]
+                 for i in (edge.start, edge.end)] for edge in model.edges]
     label = source.stem
     return [
         SheetPart(
@@ -116,6 +135,7 @@ def import_dxf_parts(path: str | Path, material: str = "", thickness: float = 0.
             notes=(
                 f"DXF:{source.resolve()}|origin="
                 f"{float(extents.extmin.x):g},{float(extents.extmin.y):g}"
+                + "|contours=" + json.dumps(contours, separators=(",", ":"))
             ),
         )
     ]

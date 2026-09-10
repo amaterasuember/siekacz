@@ -2878,6 +2878,7 @@ class StockTableWidget(QTableWidget):
 
 class PartsTableDelegate(GrainTableDelegate):
     quantity_enter_pressed = Signal(int)
+    calculation_requested = Signal()
     cell_navigation_requested = Signal(int, int, bool)
 
 
@@ -3040,6 +3041,9 @@ class PartsTableDelegate(GrainTableDelegate):
             )
             self.commitData.emit(real_editor)
             self.closeEditor.emit(real_editor, QAbstractItemDelegate.EndEditHint.NoHint)
+            if col == PART_QUANTITY_COLUMN and event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                QTimer.singleShot(0, self.calculation_requested.emit)
+                return True
             QTimer.singleShot(
                 0,
                 lambda row=row, col=col, backwards=backwards: self.cell_navigation_requested.emit(
@@ -3405,6 +3409,7 @@ class SimpleCutWindow(QMainWindow):
         self.parts_delegate = PartsTableDelegate(self.parts)
         self.parts_delegate.quantity_enter_pressed.connect(self._add_or_focus_next_part_row)
         self.parts_delegate.cell_navigation_requested.connect(self._handle_part_nav_key)
+        self.parts_delegate.calculation_requested.connect(self.calculate)
         self.parts.setItemDelegate(self.parts_delegate)
         self.parts.cellClicked.connect(self._edit_part_cell_on_click)
         self.parts.setEditTriggers(
@@ -6345,6 +6350,10 @@ class SimpleCutWindow(QMainWindow):
         self._record_parts_state()
         for part in imported:
             self.add_part_row([part.thickness, part.width, part.height, part.quantity, part.material])
+            item = self.parts.item(self.parts.rowCount() - 1, PART_MATERIAL_COLUMN)
+            if item is not None:
+                item.setData(PART_NOTES_ROLE, part.notes)
+                item.setData(PART_LABEL_ROLE, part.label)
         self._record_parts_state()
         total = sum(part.quantity for part in imported)
         QMessageBox.information(
@@ -6455,6 +6464,7 @@ class SimpleCutWindow(QMainWindow):
             return
         self._record_parts_state()   # push current state before mutation
         self.parts.removeRow(last_row)
+        self._sync_stock_with_parts()
         self._renumber_parts_rows()
         self._refresh_linked_pair_glows()
         self._record_parts_state()   # record new state
@@ -7071,6 +7081,7 @@ class SimpleCutWindow(QMainWindow):
             for row in rows:
                 self.parts.removeRow(row)
             self._refresh_row_numbers()
+            self._sync_stock_with_parts()
         finally:
             self._parts_undo_suspended = was_suspended
         if not was_suspended:
@@ -7221,7 +7232,11 @@ class SimpleCutWindow(QMainWindow):
                 dimensions = [_table_text(self.parts, row, c).strip() for c in (PART_HEIGHT_COLUMN, PART_WIDTH_COLUMN)]
                 material = item.text().strip() or ("standard" if not self._material_catalog else "")
                 pair = self._linked_pair_key(material, _table_text(self.parts, row, PART_THICKNESS_COLUMN))
-                if not any(dimensions) or pair is None:
+                if not any(dimensions):
+                    if old_pair:
+                        changed_pairs.add(old_pair)
+                    continue
+                if pair is None:
                     # A temporarily blank thickness must not sever the last
                     # complete link while the material/thickness menu is open.
                     if old_pair:
@@ -7233,6 +7248,7 @@ class SimpleCutWindow(QMainWindow):
                     changed_pairs.add(old_pair)
 
             needed = set(required) | pending_pairs
+            changed_pairs.update(set(getattr(self, "_last_known_required", ())) - needed)
             retired = changed_pairs - needed
             existing: dict[tuple[str, float], list[int]] = {}
             reusable: list[int] = []
@@ -7279,7 +7295,7 @@ class SimpleCutWindow(QMainWindow):
                 item = self.stock_table.item(row, STOCK_MATERIAL_COLUMN)
                 pair = self._linked_pair_key(self._stock_cell_text(row, STOCK_MATERIAL_COLUMN),
                                             self._stock_cell_text(row, STOCK_THICKNESS_COLUMN))
-                if pair in retired and item and item.data(STOCK_AUTO_LINKED_ROLE):
+                if pair not in needed and item and item.data(STOCK_AUTO_LINKED_ROLE) and not item.data(STOCK_TEMPLATE_ROLE):
                     self.stock_table.removeRow(row)
             blocked = self.parts.blockSignals(True)
             try:
@@ -7317,6 +7333,8 @@ class SimpleCutWindow(QMainWindow):
                     )
             except ValueError:
                 pass
+        elif item.column() in (PART_HEIGHT_COLUMN, PART_WIDTH_COLUMN):
+            self._sync_stock_with_parts()
         self._record_parts_state()
 
     def _reset_parts_undo_history(self) -> None:
@@ -7650,6 +7668,8 @@ class SimpleCutWindow(QMainWindow):
                 self.add_part_row(["", "", 1])
         finally:
             self._parts_undo_suspended = False
+        self._last_known_required = set()
+        self._sync_stock_with_parts()
         self._reset_parts_undo_history()
         self._refresh_linked_pair_glows()
 

@@ -1,3 +1,12 @@
+# SIEKACZ 9000 — 4.0.2
+
+- Enter w polu ilości zapisuje wartość i uruchamia rozkrój bez dodawania wiersza. Tab nadal przechodzi do następnej formatki.
+- Usuwanie i czyszczenie formatek zwalnia nieużywane automatyczne płyty; cofanie i ponawianie przywraca ich powiązania.
+- Podgląd rozkroju i PNG zachowują kontur DXF zapisany w projekcie. Prostokąt przerywany oznacza półfabrykat do cięcia piłą.
+- CAD: pomiar pojedynczych boków, dokładny promień R i długość łuku, przyciąganie pomiaru do narożników i krawędzi.
+- CAD: wyodrębnienie wskazanego konturu z arkusza technicznego i dodanie go jako formatki wraz z geometrią wewnętrzną.
+- Import DXF uwzględnia jednostki pliku; zbiorczy komunikat o pominiętych adnotacjach nie zasłania narzędzi.
+
 # SIEKACZ 9000 — 4.0.1
 
 - Zmiana materiału lub grubości istniejącej formatki aktualizuje powiązaną płytę, zamiast dodawać kolejne płyty.

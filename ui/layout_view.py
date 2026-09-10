@@ -1912,6 +1912,28 @@ class LayoutView(QGraphicsView):
                 rect.setToolTip(f"{part.part.name}\n{part.width:.0f} x {part.height:.0f} mm\nx={part.x:.0f}, y={part.y:.0f}{rotation_note}{bonus_note}")
                 rect.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
                 self.graphics_scene.addItem(rect)
+                from core.cad_contours import contours_from_notes
+                contours = contours_from_notes(part.part.notes)
+                if contours:
+                    from PySide6.QtCore import QPointF
+                    from PySide6.QtGui import QPainterPath
+                    path = QPainterPath()
+                    for line in contours:
+                        points = []
+                        for u, v in line:
+                            if part.rotated:
+                                u, v = 1-v, u
+                            px, py = part.x + u*part.width, part.y + v*part.height
+                            if display_rotated:
+                                px, py = py, layout.stock.width-px
+                            points.append(QPointF(sheet_x+px*scale, sheet_y+py*scale))
+                        path.moveTo(points[0])
+                        path.lineTo(points[1])
+                    rect.setBrush(QBrush(QColor(34, 197, 94, 25)))
+                    rect.setPen(QPen(border, 0.7, Qt.PenStyle.DashLine))
+                    contour_item = self.graphics_scene.addPath(path, QPen(border, 1.4))
+                    contour_item.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+                    rect.setToolTip(rect.toolTip() + "\nKontur DXF; linia przerywana: półfabrykat do rozkroju piłą")
                 # T1-4: register so legend clicks can highlight all matching parts.
                 key = _dimension_key(part.part.width, part.part.height)
                 self._part_rects_by_key.setdefault(key, []).append(rect)

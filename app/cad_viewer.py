@@ -58,6 +58,8 @@ class CadInspectionCanvas(QWidget):
         self.selected_edge: int | None = None
         self.two_point_mode = False
         self.measurement_vertices: list[int] = []
+        self._snap_position: QPointF | None = None
+        self.measurement_points: list[tuple[float, float, float]] = []
         self._pressed_at: QPoint | None = None
         self._last_mouse: QPoint | None = None
         self._dragging = False
@@ -70,8 +72,20 @@ class CadInspectionCanvas(QWidget):
 
     def set_model(self, model: CadInspectionModel) -> None:
         self.model = model
+        group_counts: dict[tuple[str, int], int] = {}
+        self._corner_indices: set[int] = set()
+        for edge in model.edges:
+            if edge.radius is None:
+                self._corner_indices.update((edge.start, edge.end))
+            else:
+                for vertex in (edge.start, edge.end):
+                    key = (edge.source_id, vertex)
+                    group_counts[key] = group_counts.get(key, 0) + 1
+        self._corner_indices.update(vertex for (_, vertex), count in group_counts.items() if count == 1)
         self.selected_edge = None
         self.measurement_vertices.clear()
+        self.measurement_points.clear()
+        self._snap_position = None
         if model.source_format == "DXF" and model.dimensions[2] < 1e-7:
             self.set_top_view()
         else:
@@ -81,6 +95,8 @@ class CadInspectionCanvas(QWidget):
     def set_two_point_mode(self, enabled: bool) -> None:
         self.two_point_mode = bool(enabled)
         self.measurement_vertices.clear()
+        self.measurement_points.clear()
+        self._snap_position = None
         self.selected_edge = None
         self.measurement_changed.emit(
             "Kliknij pierwszy punkt geometrii." if enabled else "Kliknij krawędź, aby odczytać jej długość."
@@ -90,6 +106,7 @@ class CadInspectionCanvas(QWidget):
     def clear_measurement(self) -> None:
         self.selected_edge = None
         self.measurement_vertices.clear()
+        self.measurement_points.clear()
         self.measurement_changed.emit("Pomiar wyczyszczony.")
         self.update()
 
@@ -243,18 +260,23 @@ class CadInspectionCanvas(QWidget):
         marker_pen = QPen(QColor("#ff7b72"), 2.0)
         painter.setPen(marker_pen)
         painter.setBrush(QColor("#ff7b72"))
-        for vertex in self.measurement_vertices:
-            painter.drawEllipse(self._projected[vertex], 5.0, 5.0)
-        if len(self.measurement_vertices) == 2:
+        projected = [self._project_point(point) for point in self.measurement_points]
+        for point in projected:
+            painter.drawEllipse(point, 5.0, 5.0)
+        if len(projected) == 2:
             painter.setPen(QPen(QColor("#ff7b72"), 2.0, Qt.PenStyle.DashLine))
-            painter.drawLine(*(self._projected[index] for index in self.measurement_vertices))
+            painter.drawLine(*projected)
+        if self.two_point_mode and self._snap_position is not None:
+            painter.setPen(QPen(QColor("#ffd166"), 2.0))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawEllipse(self._snap_position, 7, 7)
 
         if self.selected_edge is not None:
             edge = self.model.edges[self.selected_edge]
             first, second = self._projected[edge.start], self._projected[edge.end]
             midpoint = QPointF((first.x() + second.x()) / 2.0, (first.y() + second.y()) / 2.0)
             length = self._group_length(self.selected_edge)
-            text = f"{length:.3f} mm"
+            text = f"R {edge.radius:.3f} mm" if edge.radius is not None else f"{length:.3f} mm"
             box = QRectF(midpoint.x() + 8, midpoint.y() - 26, 128, 24)
             painter.setPen(QPen(QColor("#ffd166"), 1.0))
             painter.setBrush(QColor(7, 17, 31, 230))
@@ -290,27 +312,52 @@ class CadInspectionCanvas(QWidget):
     def _nearest_vertex(self, position: QPointF, tolerance: float = 13.0) -> int | None:
         best: tuple[float, int] | None = None
         for index, point in enumerate(self._projected):
+            if index not in getattr(self, "_corner_indices", range(len(self._projected))):
+                continue
             distance = math.hypot(point.x() - position.x(), point.y() - position.y())
             if distance <= tolerance and (best is None or distance < best[0]):
                 best = distance, index
         return best[1] if best else None
+
+    def _project_point(self, point) -> QPointF:
+        assert self.model is not None
+        low, high = self.model.bounds
+        x, y, _ = self._rotate(tuple(point[i] - (low[i]+high[i])/2 for i in range(3)), self.yaw, self.pitch, self.roll)
+        scale = self._fit_scale * self.zoom
+        return QPointF(self.width()/2 + self.pan.x() + x*scale, self.height()/2 + self.pan.y() - y*scale)
 
     def _select_at(self, position: QPointF) -> None:
         if self.model is None:
             return
         if self.two_point_mode:
             vertex = self._nearest_vertex(position)
-            if vertex is None:
-                self.measurement_changed.emit("Kliknij bliżej wierzchołka geometrii.")
+            point = self.model.vertices[vertex] if vertex is not None else None
+            if point is None:
+                edge_index = self._nearest_edge(position)
+                if edge_index is not None:
+                    edge = self.model.edges[edge_index]
+                    a, b = self._projected[edge.start], self._projected[edge.end]
+                    dx, dy = b.x()-a.x(), b.y()-a.y()
+                    t = max(0., min(1., ((position.x()-a.x())*dx + (position.y()-a.y())*dy) / max(dx*dx+dy*dy, 1e-12)))
+                    first, second = self.model.vertices[edge.start], self.model.vertices[edge.end]
+                    point = (first[0]+t*(second[0]-first[0]), first[1]+t*(second[1]-first[1]), first[2]+t*(second[2]-first[2]))
+                    if edge.radius is not None and edge.center is not None:
+                        c = edge.center
+                        factor = edge.radius / max(math.dist(point, c), 1e-12)
+                        point = (c[0]+(point[0]-c[0])*factor, c[1]+(point[1]-c[1])*factor, c[2]+(point[2]-c[2])*factor)
+            if point is None:
+                self.measurement_changed.emit("Kliknij bliżej narożnika lub krawędzi.")
                 return
-            if len(self.measurement_vertices) >= 2:
+            if len(self.measurement_points) >= 2:
+                self.measurement_points.clear()
                 self.measurement_vertices.clear()
-            self.measurement_vertices.append(vertex)
-            if len(self.measurement_vertices) == 1:
+            self.measurement_points.append(point)
+            if vertex is not None:
+                self.measurement_vertices.append(vertex)
+            if len(self.measurement_points) == 1:
                 self.measurement_changed.emit("Pierwszy punkt wybrany — kliknij drugi.")
             else:
-                first, second = (self.model.vertices[index] for index in self.measurement_vertices)
-                distance = sum((second[axis] - first[axis]) ** 2 for axis in range(3)) ** 0.5
+                distance = math.dist(*self.measurement_points)
                 self.measurement_changed.emit(f"Odległość dwóch punktów: {distance:.3f} mm")
         else:
             self.selected_edge = self._nearest_edge(position)
@@ -320,7 +367,8 @@ class CadInspectionCanvas(QWidget):
                 edge = self.model.edges[self.selected_edge]
                 qualifier = " (odległość końców krzywej)" if edge.approximate and self.model.source_format == "STEP" else ""
                 self.measurement_changed.emit(
-                    f"{edge.kind} {edge.source_id or self.selected_edge + 1}: {self._group_length(self.selected_edge):.3f} mm{qualifier}"
+                    f"{edge.kind}: {self._group_length(self.selected_edge):.3f} mm{qualifier}"
+                    + (f" · R {edge.radius:.3f} mm" if edge.radius is not None else "")
                 )
         self.update()
 
@@ -335,6 +383,17 @@ class CadInspectionCanvas(QWidget):
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802
         if self._last_mouse is None or not event.buttons():
+            if self.two_point_mode and self.model is not None:
+                vertex = self._nearest_vertex(event.position())
+                edge_index = self._nearest_edge(event.position())
+                self._snap_position = self._projected[vertex] if vertex is not None else None
+                if vertex is None and edge_index is not None:
+                    edge = self.model.edges[edge_index]
+                    a, b = self._projected[edge.start], self._projected[edge.end]
+                    dx, dy = b.x()-a.x(), b.y()-a.y()
+                    t = max(0., min(1., ((event.position().x()-a.x())*dx + (event.position().y()-a.y())*dy) / max(dx*dx+dy*dy, 1e-12)))
+                    self._snap_position = QPointF(a.x()+t*dx, a.y()+t*dy)
+                self.update()
             return
         current = event.position().toPoint()
         delta = current - self._last_mouse
@@ -498,6 +557,63 @@ class CadInspectionDialog(QDialog):
         button.clicked.connect(callback)
         return button
 
+    def isolate_contour(self) -> None:
+        """Separate a connected detail from a technical drawing and its title block."""
+        model = self.canvas.model
+        selected = self.canvas.selected_edge
+        if model is None or selected is None:
+            self.measurement_label.setText("Najpierw kliknij bok konturu, który chcesz wyodrębnić.")
+            return
+        adjacency: dict[int, set[int]] = {}
+        for edge in model.edges:
+            adjacency.setdefault(edge.start, set()).add(edge.end)
+            adjacency.setdefault(edge.end, set()).add(edge.start)
+        found = {model.edges[selected].start}
+        todo = list(found)
+        while todo:
+            for vertex in adjacency.get(todo.pop(), ()):
+                if vertex not in found:
+                    found.add(vertex)
+                    todo.append(vertex)
+        low = tuple(min(model.vertices[i][axis] for i in found) for axis in range(3))
+        high = tuple(max(model.vertices[i][axis] for i in found) for axis in range(3))
+        # Include holes and other internal geometry inside the chosen outline.
+        edges = [edge for edge in model.edges if all(all(low[a]-1e-7 <= model.vertices[i][a] <= high[a]+1e-7 for a in range(3)) for i in (edge.start, edge.end))]
+        from dataclasses import replace
+        indices = sorted({i for edge in edges for i in (edge.start, edge.end)})
+        mapping = {old: new for new, old in enumerate(indices)}
+        isolated = CadInspectionModel(model.source_path, model.source_format,
+            [model.vertices[i] for i in indices],
+            [replace(edge, start=mapping[edge.start], end=mapping[edge.end]) for edge in edges],
+            source_units=model.source_units, warnings=model.warnings)
+        self.model = isolated
+        self.canvas.set_model(isolated)
+        width, height, depth = isolated.dimensions
+        self.dimension_label.setText(f"Kontur: {width:.3f} × {height:.3f} × {depth:.3f} mm")
+        self.count_label.setText(f"Geometria: {len(isolated.vertices)} punktów · {len(isolated.edges)} krawędzi")
+        self.measurement_label.setText("Wyodrębniono kontur z geometrią wewnętrzną. Otwórz plik ponownie, aby przywrócić cały rysunek.")
+
+    def add_contour_to_parts(self) -> None:
+        model = self.canvas.model
+        from app.simple_window import SimpleCutWindow
+        parent = self.parent()
+        if model is None or not isinstance(parent, SimpleCutWindow):
+            return
+        width, height, depth = model.dimensions
+        if width <= 0.01 or height <= 0.01 or depth > 0.01:
+            self.measurement_label.setText("Do rozkroju płyty wybierz płaski kontur DXF w płaszczyźnie XY.")
+            return
+        from import_export.dxf_io import inspection_contour_notes
+        from app.simple_window import PART_MATERIAL_COLUMN, PART_NOTES_ROLE, PART_LABEL_ROLE
+        material, thickness = parent._active_part_context()
+        parent.add_part_row([thickness, width, height, 1, material])
+        item = parent.parts.item(parent.parts.rowCount()-1, PART_MATERIAL_COLUMN)
+        if item is not None:
+            item.setData(PART_NOTES_ROLE, inspection_contour_notes(model))
+            item.setData(PART_LABEL_ROLE, model.source_path.stem)
+        parent._record_parts_state()
+        self.measurement_label.setText(f"Dodano formatkę {width:.3f} × {height:.3f} mm z konturem.")
+
     def _toolbar(self) -> QWidget:
         bar = QWidget()
         layout = QHBoxLayout(bar)
@@ -543,6 +659,8 @@ class CadInspectionDialog(QDialog):
         layout.addWidget(self.measurement_label)
         layout.addSpacing(12)
         layout.addWidget(self.warning_label)
+        layout.addWidget(self._button("Wyodrębnij wskazany kontur", self.isolate_contour))
+        layout.addWidget(self._button("Dodaj kontur jako formatkę", self.add_contour_to_parts))
         layout.addStretch(1)
         return panel
 
